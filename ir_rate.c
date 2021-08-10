@@ -8,15 +8,16 @@
 ///
 /// CREATE DATE : 15-May-2019
 ///
-/// CURRENT VERSION NO : 1.1.1
+/// CURRENT VERSION NO : 1.1.2
 ///
-/// LAST RELEASE DATE  : 26-Sep-2019
+/// LAST RELEASE DATE  : 21-Nov-2019
 ///
 /// MODIFICATION HISTORY :
 ///     1.0         15-May-2019     First Version
 ///     1.1.0       17-Sep-2019     Load Balance by 10 processes regarding last digit of imsi
 ///                                 Obsoletes backup feature, Add keep state, flushes logState and purge old data feature
 ///     1.1.1       26-Sep-2019     Minor Change (IDD Access Code can be a list)
+///     1.1.2       21-Nov-2019     fix state file checking
 ///
 ///
 #define _XOPEN_SOURCE           700         // Required under GLIBC for nftw()
@@ -198,7 +199,7 @@ int main(int argc, char *argv[])
         // 5. write out common rated common format to further merging process
         // 6. disconnect from dbs to release resouce then give a process to rest (sleep)
         // 7. start over from step 1
-        
+        gnSnapCnt = 0;
         memset(szSnap, 0x00, sizeof(szSnap));
         sprintf(szSnap, "%s/%s.snap", gszIniParCommon[E_TMP_DIR], gszAppName);
         if ( cont_pos <= 0 ) {  // skip buildsnap if it need to process from last time check point
@@ -213,6 +214,9 @@ int main(int argc, char *argv[])
             retryBldSnap = 3;
             // check snap against state file
             gnSnapCnt = chkSnapVsState(szSnap);
+        }
+        if ( gnSnapCnt < 0 ) {
+            break;  // There are some problem in reading state file
         }
 
         if ( gnSnapCnt > 0 || cont_pos > 0 ) {
@@ -565,16 +569,25 @@ int chkSnapVsState(const char *snap)
     sprintf(cmd, "touch %s/%s_%s%s", gszIniParCommon[E_STATE_DIR], gszAppName, gszToday, STATE_SUFF);
 writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
     system(cmd);
-    // sort all state files (<APP_NAME>_<PROC_TYPE>_<YYYYMMDD>.proclist) to tmp_stat file
-    // state files format is <DIR>|<FILE_NAME>
-    sprintf(cmd, "sort -T %s %s/%s_*%s > %s 2>/dev/null", gszIniParCommon[E_TMP_DIR], gszIniParCommon[E_STATE_DIR], gszAppName, STATE_SUFF, tmp_stat);
+
+    if ( chkStateAndConcat(tmp_stat) == SUCCESS ) {
+        // sort all state files (<APP_NAME>_<PROC_TYPE>_<YYYYMMDD>.proclist) to tmp_stat file
+        // state files format is <DIR>|<FILE_NAME>
+        //sprintf(cmd, "sort -T %s %s/%s_*%s > %s 2>/dev/null", gszIniParCommon[E_TMP_DIR], gszIniParCommon[E_STATE_DIR], gszAppName, STATE_SUFF, tmp_stat);
+        sprintf(cmd, "sort -T %s %s > %s.tmp 2>/dev/null", gszIniParCommon[E_TMP_DIR], tmp_stat, tmp_stat);
 writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
-    system(cmd);
+        system(cmd);
+    }
+    else {
+        unlink(tmp_stat);
+        return FAILED;
+    }
+
     // compare tmp_stat file(sorted all state files) with sorted first_snap to get only unprocessed new files list
-    sprintf(cmd, "comm -23 %s %s > %s 2>/dev/null", snap, tmp_stat, tmp_snap);
+    sprintf(cmd, "comm -23 %s %s.tmp > %s 2>/dev/null", snap, tmp_stat, tmp_snap);
 writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
     system(cmd);
-    sprintf(cmd, "rm -f %s", tmp_stat);
+    sprintf(cmd, "rm -f %s %s.tmp", tmp_stat, tmp_stat);
 writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
     system(cmd);
     
@@ -1799,4 +1812,44 @@ void makeIni()
     system(cmd);
     fprintf(stderr, "ini template file is %s.ini\n", tmp_ini);
 
+}
+
+int chkStateAndConcat(const char *oFileName)
+{
+    int result = FAILED;
+    DIR *p_dir;
+    struct dirent *p_dirent;
+    char cmd[SIZE_BUFF];
+    memset(cmd, 0x00, sizeof(cmd));
+    unlink(oFileName);
+    
+    if ( (p_dir = opendir(gszIniParCommon[E_STATE_DIR])) != NULL ) {
+        while ( (p_dirent = readdir(p_dir)) != NULL ) {
+            // state file name: <APP_NAME>_<PROC_TYPE>_YYYYMMDD.proclist
+            if ( strcmp(p_dirent->d_name, ".") == 0 || strcmp(p_dirent->d_name, "..") == 0 )
+                continue;
+
+            if ( strstr(p_dirent->d_name, STATE_SUFF) != NULL &&
+                 strstr(p_dirent->d_name, gszAppName) != NULL ) {
+                char state_file[SIZE_ITEM_L];
+                memset(state_file, 0x00, sizeof(state_file));
+                sprintf(state_file, "%s/%s", gszIniParCommon[E_STATE_DIR], p_dirent->d_name);
+                if ( access(state_file, F_OK|R_OK|W_OK) != SUCCESS ) {
+                    writeLog(LOG_ERR, "unable to read/write file %s", state_file);
+                    result = FAILED;
+                    break;
+                }
+                else {
+                    sprintf(cmd, "cat %s >> %s 2>/dev/null", state_file, oFileName);
+                    system(cmd);
+                    result = SUCCESS;
+                }
+            }
+        }
+        closedir(p_dir);
+        return result;
+    }
+    else {
+        return result;
+    }
 }
