@@ -19,6 +19,7 @@
 ///     1.1.1       26-Sep-2019     Minor Change (IDD Access Code can be a list)
 ///     1.1.2       21-Nov-2019     fix state file checking
 ///     1.2.0       20-Jan-2020     Support IR SCP file format
+///     1.2.1       31-Jul-2020     check utc_time format must be in form of (+/-)hhmm
 ///
 ///
 #ifndef __IR_RATE_H__
@@ -30,7 +31,7 @@
 #include <ftw.h>
 
 #define _APP_NAME_              "ir_rate"
-#define _APP_VERS_              "1.1.2"
+#define _APP_VERS_              "1.2.1"
 
 #define     TYPE_TAP            "TAP"
 #define     TYPE_NRT            "NRT"
@@ -1083,6 +1084,7 @@ int     _ini_callback(const char *section, const char *key, const char *value, v
 void    makeIni();
 int     chkStateAndConcat(const char *oFileName);
 
+int     validUTC(char *utc_time);
 
 #ifdef  __cplusplus
     }

@@ -19,6 +19,7 @@
 ///     1.1.1       26-Sep-2019     Minor Change (IDD Access Code can be a list)
 ///     1.1.2       21-Nov-2019     fix state file checking
 ///     1.2.0       20-Jan-2020     Support IR SCP file format
+///     1.2.1       31-Jul-2020     check utc_time format must be in form of (+/-)hhmm
 ///
 ///
 #include "ir_rate_dbu.h"

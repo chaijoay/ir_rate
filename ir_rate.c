@@ -19,6 +19,7 @@
 ///     1.1.1       26-Sep-2019     Minor Change (IDD Access Code can be a list)
 ///     1.1.2       21-Nov-2019     fix state file checking
 ///     1.2.0       20-Jan-2020     Support IR SCP file format
+///     1.2.1       31-Jul-2020     check utc_time format must be in form of (+/-)hhmm
 ///
 ///
 #define _XOPEN_SOURCE           700         // Required under GLIBC for nftw()
@@ -1733,6 +1734,12 @@ int wrtOutIrCommon(const char *odir, const char *ir_type, const char *file_dtm, 
         }
     }
 
+    // verify utc_time must be in format of (+/-)hhmm
+    if ( !validUTC(gIrCommon.utc_time) ) {
+        writeLog(LOG_ERR, "invalid utc_time format %s (%s, %s, %s)", gIrCommon.utc_time, gIrCommon.mobile_no, gIrCommon.pmn_name, gIrCommon.ori_source);
+        return FAILED;
+    }
+
     fprintf(*ofp, "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n",
                 gIrCommon.call_type, gIrCommon.imsi, gIrCommon.st_call_date, gIrCommon.st_call_time,
                 gIrCommon.duration, gIrCommon.called_no, gIrCommon.charge, gIrCommon.pmn, gIrCommon.proc_dtm,
@@ -1917,4 +1924,42 @@ int chkStateAndConcat(const char *oFileName)
     else {
         return result;
     }
+}
+
+int validUTC(char *utc_time)
+{
+
+    int len = strlen(utc_time);
+    int valid = 1;
+    if ( len > 5 || len < 4 ) {
+        valid = 0;
+    }
+    else if ( len == 5 ) {
+        valid = 0;
+        if ( utc_time[0] == '0' ) {
+            utc_time[0] = '+';
+            valid = 1;
+        }
+        else if ( utc_time[0] == '+' || utc_time[0] == '-' ) {
+            valid = 1;
+        }
+    }
+    else {
+        char hh[3], mm[3];
+        int h, m;
+        memset(hh, 0x00, sizeof(hh)); memset(mm, 0x00, sizeof(mm));
+        strncpy(hh, utc_time, 2);
+        strncpy(mm, utc_time+2, 2);
+        h = atoi(hh);
+        m = atoi(mm);
+        if ( h > 13 || h < -13 ) {
+            valid = 0;
+        }
+        if ( m > 59 ) {
+            valid = 0;
+        }
+    }
+
+    return valid;
+
 }
