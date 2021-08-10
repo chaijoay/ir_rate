@@ -8,12 +8,15 @@
 ///
 /// CREATE DATE : 15-May-2019
 ///
-/// CURRENT VERSION NO : 1.0
+/// CURRENT VERSION NO : 1.1.1
 ///
-/// LAST RELEASE DATE  : 15-May-2019
+/// LAST RELEASE DATE  : 26-Sep-2019
 ///
 /// MODIFICATION HISTORY :
-///     1.0     15-May-2019     First Version
+///     1.0         15-May-2019     First Version
+///     1.1.0       17-Sep-2019     Load Balance by 10 processes regarding last digit of imsi
+///                                 Obsoletes backup feature, Add keep state, flushes logState and purge old data feature
+///     1.1.1       26-Sep-2019     Minor Change (IDD Access Code can be a list)
 ///
 ///
 #include "ir_rate_dbu.h"

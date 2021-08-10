@@ -8,14 +8,15 @@
 ///
 /// CREATE DATE : 15-May-2019
 ///
-/// CURRENT VERSION NO : 1.0
+/// CURRENT VERSION NO : 1.1.1
 ///
-/// LAST RELEASE DATE  : 15-May-2019
+/// LAST RELEASE DATE  : 26-Sep-2019
 ///
 /// MODIFICATION HISTORY :
 ///     1.0         15-May-2019     First Version
 ///     1.1.0       17-Sep-2019     Load Balance by 10 processes regarding last digit of imsi
 ///                                 Obsoletes backup feature, Add keep state, flushes logState and purge old data feature
+///     1.1.1       26-Sep-2019     Minor Change (IDD Access Code can be a list)
 ///
 ///
 #define _XOPEN_SOURCE           700         // Required under GLIBC for nftw()
@@ -51,7 +52,8 @@ char gszOutFname[SIZE_ITEM_L];
 // char *pbuf_scp[NOF_SCP_FLD];
 
 //char            *pbuf_rec[SIZE_ITEM_M];
-char            *pbuf_rec[SIZE_BUFF];
+char    *pbuf_rec[SIZE_BUFF];
+char    *pbuf_idd[SIZE_ITEM_S];
 
 ST_IR_COMMON    gIrCommon;
 FILE    *gfpSnap;
@@ -68,6 +70,7 @@ int     gnLenSufRtb;
 short   gnFileSeq = 0;
 time_t  gzLastTimeT = 0;
 int     gnPrcId;
+int     gnIddCnt = 0;
 
 const char gszIniStrSection[E_NOF_SECTION][SIZE_ITEM_T] = {
     "INPUT",
@@ -820,6 +823,10 @@ int validateIni()
         result = FAILED;
         fprintf(stderr, "invalid %s '%s'\n", gszIniStrCommon[E_DEF_IDD_ACC], gszIniParCommon[E_DEF_IDD_ACC]);
     }
+    else {
+        memset(pbuf_idd, 0x00, sizeof(pbuf_idd));
+        gnIddCnt = getTokenAll(pbuf_idd, SIZE_ITEM_S, gszIniParCommon[E_DEF_IDD_ACC], ',');
+    }
     if ( *gszIniParCommon[E_REJ_INVALID] == 'Y' || *gszIniParCommon[E_REJ_INVALID] == 'y' ) {
         strcpy(gszIniParCommon[E_REJ_INVALID], "Y");
         if ( access(gszIniParCommon[E_REJ_OUT_DIR], F_OK|R_OK) != SUCCESS ) {
@@ -1559,22 +1566,34 @@ int calcOneTariff()  // need to fixed
     }
     else {
         char call_num[25];
-        int acc_len = strlen(gszIniParCommon[E_DEF_IDD_ACC]);
+        int acc_len;
         int idd_len = strlen(onetariff.idd_acc_code);
         int cntry_len = strlen(onetariff.country_code);
+        int i = 0;
         memset(call_num, 0x00, sizeof(call_num));
 
-        if ( strncmp(gIrCommon.called_no, gszIniParCommon[E_DEF_IDD_ACC], acc_len) == 0 ) {
-            strcpy(call_num, gIrCommon.called_no+acc_len);
+        for ( i = 0; i < gnIddCnt; i++ ) {
+            acc_len = strlen(pbuf_idd[i]);
+            if ( strncmp(gIrCommon.called_no, pbuf_idd[i], acc_len) == 0 ) {
+                strcpy(call_num, gIrCommon.called_no+acc_len);
+                break;
+            }
         }
-        else if ( strncmp(gIrCommon.called_no, onetariff.idd_acc_code, idd_len) == 0 ) {
-            strcpy(call_num, gIrCommon.called_no+idd_len);
-        }
-        else {
-            strcpy(call_num, gIrCommon.called_no);
+        if ( call_num[0] == '\0' ) {
+            if ( strncmp(gIrCommon.called_no, onetariff.idd_acc_code, idd_len) == 0 ) {
+                strcpy(call_num, gIrCommon.called_no+idd_len);
+            }
+            else {
+                strcpy(call_num, gIrCommon.called_no);
+            }
         }
 
-        if ( strncmp(call_num, "66", 2) == 0 ) {
+        if ( call_num[0] == '\0' ) {    // called_no is null, default to local call
+            one_charge = onetariff.tariff[E_MOC_CHR_LOCAL];
+            strcpy(gIrCommon.country_code, onetariff.country_code);
+            strcpy(gIrCommon.called_no_type, "Local");
+        }
+        else if ( strncmp(call_num, "66", 2) == 0 ) {
             one_charge = onetariff.tariff[E_MOC_CHR_TO_TH];
             strcpy(gIrCommon.country_code, "66");
             strcpy(gIrCommon.called_no_type, "Thai");
