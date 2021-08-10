@@ -13,7 +13,9 @@
 /// LAST RELEASE DATE  : 15-May-2019
 ///
 /// MODIFICATION HISTORY :
-///     1.0     15-May-2019     First Version
+///     1.0         15-May-2019     First Version
+///     1.1.0       17-Sep-2019     Load Balance by 10 processes regarding last digit of imsi
+///                                 Obsoletes backup feature, Add keep state, flushes logState and purge old data feature
 ///
 ///
 #ifndef __IR_RATE_H__
@@ -25,7 +27,7 @@
 #include <ftw.h>
 
 #define _APP_NAME_              "ir_rate"
-#define _APP_VERS_              "1.0"
+#define _APP_VERS_              "1.1"
 
 #define     TYPE_TAP            "TAP"
 #define     TYPE_NRT            "NRT"
@@ -37,6 +39,7 @@
 #define     TYPE_VOICE_MT       "30"
 #define     TYPE_SMS_MT         "31"
 
+#define     STATE_SUFF          ".proclist"
 #define     ALERT_SUFF          ".alrt"
 
 //#define     TYPE_CFWD           "22"    // obsoleted
@@ -92,8 +95,9 @@ typedef enum {
     E_ALRT_DB,
     E_ALRT_DB_DIR,
     E_TMP_DIR,
-    E_BCKUP,
-    E_BCKUP_DIR,
+    E_STATE_DIR,
+    E_KEEP_STATE_DAY,
+    E_SKIP_OLD_FILE,
     E_LOG_DIR,
     E_LOG_LEVEL,
     E_SLEEP_SEC,
@@ -1047,7 +1051,9 @@ int     _chkTapFile(const char *fpath, const struct stat *info, int typeflag, st
 int     _chkNrtFile(const char *fpath, const struct stat *info, int typeflag, struct FTW *ftwbuf);
 int     _chkScpFile(const char *fpath, const struct stat *info, int typeflag, struct FTW *ftwbuf);
 int     _chkRtbFile(const char *fpath, const struct stat *info, int typeflag, struct FTW *ftwbuf);
+int     chkSnapVsState(const char *snap);
 void    procSynFiles(const char *dir, const char *fname, const char *ir_type, long cont_pos);
+int     olderThan(int day, const char *sdir, const char *fname);
 int     (*verifyField)(char *pbuf[], int bsize, const char *fname, char *err_msg);
 int     verifyInpFieldTap(char *pbuf[], int bsize, const char *fname, char *err_msg);
 int     verifyInpFieldNrt(char *pbuf[], int bsize, const char *fname, char *err_msg);
@@ -1063,6 +1069,9 @@ int     wrtAlrtDbConnFail(const char *odir, const char *fname, const char *dbsvr
 
 int     manageMapTab();
 
+int     logState(const char *dir, const char *file_name, const char *ir_type);
+void    clearOldState();
+void    purgeOldData(const char *old_state);
 int     readConfig(int argc, char *argv[]);
 void    logHeader();
 void    printUsage();

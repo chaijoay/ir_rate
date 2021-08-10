@@ -1283,8 +1283,8 @@ writeLog(LOG_DB2, "getMobileNo: Ora(%d) error on get mobile from imsi step 3 (%s
                     "FROM  PP_MOBILE_ACCOUNT A, PP_SIM_STOCK B " \
                     "WHERE A.SIM_SERIAL_NO = B.SIM_SERIAL_NO " \
                     "AND   B.IMSI = '%s' " \
-                    "AND   A.ACCOUNT_STATUS = 'SA' " \
-                    "AND A.TYPE_OF_MOBILE_NO = 'PPS' ", imsi);
+                    "AND   A.ACCOUNT_STATUS IN ('SA', 'SS') " \
+                    "AND   A.TYPE_OF_MOBILE_NO = 'PPS' ", imsi);
         szSql.len = strlen((char*)szSql.arr);
 writeLog(LOG_DB3, (char*)szSql.arr);
 

@@ -13,7 +13,9 @@
 /// LAST RELEASE DATE  : 15-May-2019
 ///
 /// MODIFICATION HISTORY :
-///     1.0     15-May-2019     First Version
+///     1.0         15-May-2019     First Version
+///     1.1.0       17-Sep-2019     Load Balance by 10 processes regarding last digit of imsi
+///                                 Obsoletes backup feature, Add keep state, flushes logState and purge old data feature
 ///
 ///
 #define _XOPEN_SOURCE           700         // Required under GLIBC for nftw()
@@ -53,6 +55,7 @@ char            *pbuf_rec[SIZE_BUFF];
 
 ST_IR_COMMON    gIrCommon;
 FILE    *gfpSnap;
+FILE    *gfpState;
 int     gnSnapCnt;
 int     gnLenPreTap;
 int     gnLenSufTap;
@@ -64,6 +67,7 @@ int     gnLenPreRtb;
 int     gnLenSufRtb;
 short   gnFileSeq = 0;
 time_t  gzLastTimeT = 0;
+int     gnPrcId;
 
 const char gszIniStrSection[E_NOF_SECTION][SIZE_ITEM_T] = {
     "INPUT",
@@ -104,8 +108,9 @@ const char gszIniStrCommon[E_NOF_PAR_COMMON][SIZE_ITEM_T] = {
     "ALRT_DBCON_FAIL",
     "ALRT_DBCON_DIR",
     "TMP_DIR",
-    "BACKUP",
-    "BACKUP_DIR",
+    "STATE_DIR",
+    "KEEP_STATE_DAY",
+    "SKIP_OLD_FILE",
     "LOG_DIR",
     "LOG_LEVEL",
     "SLEEP_SECOND"
@@ -133,6 +138,7 @@ char gszIniParDbConn[E_NOF_PAR_DBCONN][SIZE_ITEM_L];
 int main(int argc, char *argv[])
 {
     FILE *ifp = NULL;
+    gfpState = NULL;
     char szSnap[SIZE_ITEM_L], snp_line[SIZE_BUFF];
     int retryBldSnap = 3, nInpFileCntDay = 0, nInpFileCntRnd = 0;
     time_t t_bat_start = 0, t_bat_stop = 0;
@@ -202,6 +208,8 @@ int main(int argc, char *argv[])
                 continue;
             }
             retryBldSnap = 3;
+            // check snap against state file
+            gnSnapCnt = chkSnapVsState(szSnap);
         }
 
         if ( gnSnapCnt > 0 || cont_pos > 0 ) {
@@ -258,7 +266,9 @@ int main(int argc, char *argv[])
                     getTokenItem(snp_line, 2, '|', sdir);
                     getTokenItem(snp_line, 3, '|', sfname);
 
-                    procSynFiles(sdir, sfname, irtype, 0L);
+                    if ( ! olderThan(atoi(gszIniParCommon[E_SKIP_OLD_FILE]), sdir, sfname) ) {
+                        procSynFiles(sdir, sfname, irtype, 0L);
+                    }
 
                     nInpFileCntDay++;
                     nInpFileCntRnd++;
@@ -275,6 +285,10 @@ int main(int argc, char *argv[])
         }
 
         if ( isTerminated() == TRUE ) {
+            if ( gfpState != NULL ) {
+                fclose(gfpState);
+                gfpState = NULL;
+            }
             break;
         }
         else {
@@ -283,8 +297,13 @@ int main(int argc, char *argv[])
         }
 
         if ( strcmp(gszToday, getSysDTM(DTM_DATE_ONLY)) ) {
+            if ( gfpState != NULL ) {
+                fclose(gfpState);
+                gfpState = NULL;
+            }
             writeLog(LOG_INF, "total processed files for today=%d", nInpFileCntDay);
             strcpy(gszToday, getSysDTM(DTM_DATE_ONLY));
+            clearOldState();
             manageLogFile();
             nInpFileCntDay = 0;
         }
@@ -293,7 +312,7 @@ int main(int argc, char *argv[])
     procLock(gszAppName, E_CLR);
     freeTab();
     writeLog(LOG_INF, "%s", getSigInfoStr());
-    writeLog(LOG_INF, "------- %s process completely stop -------", _APP_NAME_);
+    writeLog(LOG_INF, "------- %s %d process completely stop -------", _APP_NAME_, gnPrcId);
     stopLogging();
 
     return EXIT_SUCCESS;
@@ -518,14 +537,159 @@ int _chkRtbFile(const char *fpath, const struct stat *info, int typeflag, struct
 
 }
 
+int chkSnapVsState(const char *snap)
+{
+    char cmd[SIZE_BUFF];
+    char tmp_stat[SIZE_ITEM_L], tmp_snap[SIZE_ITEM_L];
+    FILE *fp = NULL;
+
+    memset(tmp_stat, 0x00, sizeof(tmp_stat));
+    memset(tmp_snap, 0x00, sizeof(tmp_snap));
+    memset(cmd, 0x00, sizeof(cmd));
+    
+    sprintf(tmp_stat, "%s/tmp_%s_XXXXXX", gszIniParCommon[E_TMP_DIR], gszAppName);
+    sprintf(tmp_snap, "%s/osnap_%s_XXXXXX", gszIniParCommon[E_TMP_DIR], gszAppName);
+    mkstemp(tmp_stat);
+    mkstemp(tmp_snap);
+
+	// close and flush current state file, in case it's opening
+	if ( gfpState != NULL ) {
+		fclose(gfpState);
+		gfpState = NULL;
+	}
+
+    // create state file of current day just in case there is currently no any state file.
+    sprintf(cmd, "touch %s/%s_%s%s", gszIniParCommon[E_STATE_DIR], gszAppName, gszToday, STATE_SUFF);
+writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
+    system(cmd);
+    // sort all state files (<APP_NAME>_<PROC_TYPE>_<YYYYMMDD>.proclist) to tmp_stat file
+    // state files format is <DIR>|<FILE_NAME>
+    sprintf(cmd, "sort -T %s %s/%s_*%s > %s 2>/dev/null", gszIniParCommon[E_TMP_DIR], gszIniParCommon[E_STATE_DIR], gszAppName, STATE_SUFF, tmp_stat);
+writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
+    system(cmd);
+    // compare tmp_stat file(sorted all state files) with sorted first_snap to get only unprocessed new files list
+    sprintf(cmd, "comm -23 %s %s > %s 2>/dev/null", snap, tmp_stat, tmp_snap);
+writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
+    system(cmd);
+    sprintf(cmd, "rm -f %s", tmp_stat);
+writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
+    system(cmd);
+    
+    sprintf(cmd, "mv %s %s", tmp_snap, snap);
+writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
+    system(cmd);
+
+    // get record count from output file (snap)
+    sprintf(cmd, "cat %s | wc -l", snap);
+writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
+    fp = popen(cmd, "r");
+    fgets(tmp_stat, sizeof(tmp_stat), fp);
+    pclose(fp);
+
+    return atoi(tmp_stat);
+
+}
+
+int logState(const char *dir, const char *file_name, const char *ir_type)
+{
+    int result = 0;
+    if ( gfpState == NULL ) {
+        char fstate[SIZE_ITEM_L];
+        memset(fstate, 0x00, sizeof(fstate));
+        sprintf(fstate, "%s/%s_%s%s", gszIniParCommon[E_STATE_DIR], gszAppName, gszToday, STATE_SUFF);
+        gfpState = fopen(fstate, "a");
+    }
+    result = fprintf(gfpState, "%s|%s|%s\n", ir_type, dir, file_name);
+    fflush(gfpState);
+    return result;
+}
+
+void clearOldState()
+{
+    struct tm *ptm;
+    time_t lTime;
+    char tmp[SIZE_ITEM_L];
+    char szOldestFile[SIZE_ITEM_S];
+    char szOldestDate[SIZE_DATE_TIME_FULL+1];
+    DIR *p_dir;
+    struct dirent *p_dirent;
+    int len1 = 0, len2 = 0;
+
+    /* get oldest date to keep */
+    time(&lTime);
+    ptm = localtime( &lTime);
+//printf("ptm->tm_mday = %d\n", ptm->tm_mday);
+    ptm->tm_mday = ptm->tm_mday - atoi(gszIniParCommon[E_KEEP_STATE_DAY]);
+//printf("ptm->tm_mday(after) = %d, keepState = %d\n", ptm->tm_mday, atoi(gszIniParCommon[E_KEEP_STATE_DAY]));
+    lTime = mktime(ptm);
+    ptm = localtime(&lTime);
+    strftime(szOldestDate, sizeof(szOldestDate)-1, "%Y%m%d", ptm);
+//printf("szOldestDate = %s\n", szOldestDate);
+
+	writeLog(LOG_INF, "purge state file up to %s (keep %s days)", szOldestDate, gszIniParCommon[E_KEEP_STATE_DAY]);
+    sprintf(szOldestFile, "%s%s", szOldestDate, STATE_SUFF);     // YYYYMMDD.proclist
+    len1 = strlen(szOldestFile);
+    if ( (p_dir = opendir(gszIniParCommon[E_STATE_DIR])) != NULL ) {
+        while ( (p_dirent = readdir(p_dir)) != NULL ) {
+            // state file name: <APP_NAME>_<PROC_TYPE>_YYYYMMDD.proclist
+            if ( strcmp(p_dirent->d_name, ".") == 0 || strcmp(p_dirent->d_name, "..") == 0 )
+                continue;
+            if ( strstr(p_dirent->d_name, STATE_SUFF) != NULL &&
+                 strstr(p_dirent->d_name, gszAppName) != NULL ) {
+
+                len2 = strlen(p_dirent->d_name);
+                // compare only last term of YYYYMMDD.proclist
+                if ( strcmp(szOldestFile, (p_dirent->d_name + (len2-len1))) > 0 ) {
+                    char old_state[SIZE_ITEM_L];
+                    memset(old_state, 0x00, sizeof(old_state));
+                    sprintf(old_state, "%s/%s", gszIniParCommon[E_STATE_DIR], p_dirent->d_name);
+                    
+                    purgeOldData(old_state);
+                    
+                    sprintf(tmp, "rm -f %s 2>/dev/null", old_state);
+                    writeLog(LOG_INF, "remove state file: %s", p_dirent->d_name);
+                    system(tmp);
+                }
+            }
+        }
+        closedir(p_dir);
+    }
+}
+
+void purgeOldData(const char *old_state)
+{
+    FILE *ofp = NULL;
+    char line[SIZE_ITEM_L], sdir[SIZE_ITEM_L], sfname[SIZE_ITEM_L], cmd[SIZE_ITEM_L];
+    
+    if ( (ofp = fopen(old_state, "r")) != NULL ) {
+        memset(line, 0x00, sizeof(line));
+        while ( fgets(line, sizeof(line),ofp) ) {
+            memset(sdir,   0x00, sizeof(sdir));
+            memset(sfname, 0x00, sizeof(sfname));
+            memset(cmd,    0x00, sizeof(cmd));
+            
+            getTokenItem(line, 1, '|', sdir);
+            getTokenItem(line, 2, '|', sfname);
+            
+            sprintf(cmd, "rm -f %s/%s", sdir, sfname);
+            writeLog(LOG_DB3, "\told file %s/%s purged", sdir, sfname);
+            system(cmd);
+        }
+        fclose(ofp);
+        ofp = NULL;
+    }
+}
+
 int readConfig(int argc, char *argv[])
 {
 
     char appPath[SIZE_ITEM_L];
+    char tmp[SIZE_ITEM_T];
     int key, i;
 
     memset(gszIniFile, 0x00, sizeof(gszIniFile));
     memset(gszAppName, 0x00, sizeof(gszAppName));
+    memset(tmp, 0x00, sizeof(tmp));
 
     memset(gszIniParInput,  0x00, sizeof(gszIniParInput));
     memset(gszIniParOutput, 0x00, sizeof(gszIniParOutput));
@@ -540,6 +704,9 @@ int readConfig(int argc, char *argv[])
         if ( strcmp(argv[i], "-n") == 0 ) {     // specified ini file
             strcpy(gszIniFile, argv[++i]);
         }
+        else if ( strcmp(argv[i], "-i") == 0 ) {     // specified process id
+            strcpy(tmp, argv[++i]);
+        }
         else if ( strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0 ) {
             printUsage();
             return FAILED;
@@ -549,15 +716,24 @@ int readConfig(int argc, char *argv[])
             return FAILED;
         }
     }
-
-    if ( gszIniFile[0] == '\0' ) {
-        sprintf(gszIniFile, "%s/%s.ini", appPath, _APP_NAME_);
+    
+    if ( strlen(tmp) > 1 || *tmp - '0' < 0 || *tmp - '0' > 9 ) {
+        printUsage();
+        return FAILED;
     }
-    sprintf(gszAppName, "%s", _APP_NAME_);
+    
+    gnPrcId = atoi(tmp);
+    sprintf(gszAppName, "%s_%d", _APP_NAME_, gnPrcId);
+    if ( gszIniFile[0] == '\0' ) {
+        sprintf(gszIniFile, "%s/%s_%d.ini", appPath, _APP_NAME_, gnPrcId);
+    }
 
     if ( access(gszIniFile, F_OK|R_OK) != SUCCESS ) {
-        fprintf(stderr, "unable to access ini file %s (%s)\n", gszIniFile, strerror(errno));
-        return FAILED;
+        sprintf(gszIniFile, "%s/%s.ini", appPath, _APP_NAME_);
+        if ( access(gszIniFile, F_OK|R_OK) != SUCCESS ) {
+            fprintf(stderr, "unable to access ini file %s (%s)\n", gszIniFile, strerror(errno));
+            return FAILED;
+        }
     }
 
     // Read config of INPUT Section
@@ -595,7 +771,8 @@ void printUsage()
 {
     fprintf(stderr, "\nusage: %s version %s\n", _APP_NAME_, _APP_VERS_);
     fprintf(stderr, "\trating and output common format for TAP, NRT and SCP\n\n");
-    fprintf(stderr, "%s.exe [-n <ini_file>] [-mkini]\n", _APP_NAME_);
+    fprintf(stderr, "%s.exe <-i <id>> [-n <ini_file>] [-mkini]\n", _APP_NAME_);
+    fprintf(stderr, "\tid\tto specify process id (0-9) the id is also used to process ending no of imsi\n");
     fprintf(stderr, "\tini_file\tto specify ini file other than default ini\n");
     fprintf(stderr, "\t-mkini\t\tto create ini template\n");
     fprintf(stderr, "\n");
@@ -675,12 +852,17 @@ int validateIni()
         result = FAILED;
         fprintf(stderr, "unable to access %s %s (%s)\n", gszIniStrCommon[E_TMP_DIR], gszIniParCommon[E_TMP_DIR], strerror(errno));
     }
-    if ( *gszIniParCommon[E_BCKUP] == 'Y' || *gszIniParCommon[E_BCKUP] == 'y' ) {
-        strcpy(gszIniParCommon[E_BCKUP], "Y");
-        if ( access(gszIniParCommon[E_BCKUP_DIR], F_OK|R_OK) != SUCCESS ) {
-            result = FAILED;
-            fprintf(stderr, "unable to access %s %s (%s)\n", gszIniStrCommon[E_BCKUP_DIR], gszIniParCommon[E_BCKUP_DIR], strerror(errno));
-        }
+    if ( access(gszIniParCommon[E_STATE_DIR], F_OK|R_OK) != SUCCESS ) {
+        result = FAILED;
+        fprintf(stderr, "unable to access %s %s (%s)\n", gszIniStrCommon[E_STATE_DIR], gszIniParCommon[E_STATE_DIR], strerror(errno));
+    }
+    if ( atoi(gszIniParCommon[E_KEEP_STATE_DAY]) <= 0 ) {
+        result = FAILED;
+        fprintf(stderr, "%s must be > 0 (%s)\n", gszIniStrCommon[E_KEEP_STATE_DAY], gszIniParCommon[E_KEEP_STATE_DAY]);
+    }
+    if ( atoi(gszIniParCommon[E_SKIP_OLD_FILE]) <= 0 ) {
+        result = FAILED;
+        fprintf(stderr, "%s must be > 0 (%s)\n", gszIniStrCommon[E_SKIP_OLD_FILE], gszIniParCommon[E_SKIP_OLD_FILE]);
     }
     if ( access(gszIniParCommon[E_LOG_DIR], F_OK|R_OK) != SUCCESS ) {
         result = FAILED;
@@ -756,18 +938,21 @@ void procSynFiles(const char *dir, const char *fname, const char *ir_type, long 
 
     FILE *ifp_ir = NULL, *ofp_ir = NULL, *ofp_rej = NULL;
     FILE *ofp_imsi = NULL, *ofp_pmn = NULL;
-    char full_ir_name[SIZE_ITEM_L], ofile_dtm[SIZE_DATE_TIME+1];
+    char full_ir_name[SIZE_ITEM_L], ofile_dtm[SIZE_DATE_TIME_FULL+1];
     char read_rec[SIZE_BUFF_20X], read_rec_ori[SIZE_BUFF_20X], cSep;
     char rej_msg[SIZE_BUFF_20X];
     int ir_num_field = 0, parse_field_cnt = 0;
     int rate_result = 0, line_cnt = 0;
-    int cntr_imsi = 0, cntr_pmn = 0, cntr_wrt = 0, cntr_rej = 0;
+    int cntr_imsi = 0, cntr_pmn = 0, cntr_wrt = 0, cntr_rej = 0, cnt_skip = 0;
+    int mod_id, idx, imsi_field;
     time_t t_start = 0, t_stop = 0;
 
     memset(full_ir_name, 0x00, sizeof(full_ir_name));
     memset(read_rec, 0x00, sizeof(read_rec));
     memset(ofile_dtm, 0x00, sizeof(ofile_dtm));
-    strcpy(ofile_dtm, getSysDTM(DTM_DATE_TIME));
+    
+    ( ++gnFileSeq > 999 ? gnFileSeq = 0 : gnFileSeq );
+    sprintf(ofile_dtm, "%s_%03d_%d", getSysDTM(DTM_DATE_TIME), gnFileSeq, gnPrcId);
 
     sprintf(full_ir_name, "%s/%s", dir, fname);
     if ( (ifp_ir = fopen(full_ir_name, "r")) == NULL ) {
@@ -796,21 +981,25 @@ void procSynFiles(const char *dir, const char *fname, const char *ir_type, long 
                 ir_num_field = NOF_TAP_FLD;
                 cSep = '#';
                 verifyField = verifyInpFieldTap;
+                imsi_field = E_TAP_IMSI;
             }
             else if ( strcmp(ir_type, gszIniParInput[E_NRT_FPREF]) == 0 ) {
                 ir_num_field = NOF_NRT_FLD;
                 cSep = '|';
                 verifyField = verifyInpFieldNrt;
+                imsi_field = E_NRT_IMSI;
             }
             else if ( strcmp(ir_type, gszIniParInput[E_SCP_FPREF]) == 0 ) {
                 ir_num_field = 800;  /* NOF_SCP_FLD; */
                 cSep = '|';
                 verifyField = verifyInpFieldScp;
+                imsi_field = 1;
             }
             else {
                 ir_num_field = NOF_RTB_FLD;
                 cSep = '|';
                 verifyField = verifyInpFieldRtb;
+                imsi_field = 1;
             }
 
             // parse field
@@ -821,6 +1010,16 @@ void procSynFiles(const char *dir, const char *fname, const char *ir_type, long 
                     wrtOutReject(gszIniParCommon[E_REJ_OUT_DIR], fname, &ofp_rej, rej_msg);
                     cntr_rej++;
                 }
+                continue;
+            }
+            
+// check if the ending number of imsi is to be handled by this process or not
+            idx = strlen(pbuf_rec[imsi_field])-1;
+            mod_id = pbuf_rec[imsi_field][idx] - '0';
+
+            if ( gnPrcId != mod_id ) {
+writeLog(LOG_DB3, "skip unhandled imsi '%s'", pbuf_rec[imsi_field]);
+                cnt_skip++;
                 continue;
             }
 
@@ -852,10 +1051,11 @@ void procSynFiles(const char *dir, const char *fname, const char *ir_type, long 
                 cntr_wrt++;
             }
             else {
+                cnt_skip++;
             }
             
-            if ( (line_cnt % 5000) == 0 && line_cnt > 0 ) {
-                writeLog(LOG_INF, "%10d records have been processed", line_cnt);
+            if ( (cntr_wrt % 2000) == 0 && cntr_wrt > 0 ) {
+                writeLog(LOG_INF, "%10d records have been processed", cntr_wrt);
                 checkPoint(&ifp_ir, full_ir_name, (char*)ir_type, gszIniParCommon[E_TMP_DIR], gszAppName, E_SET);
             }
             
@@ -881,20 +1081,45 @@ void procSynFiles(const char *dir, const char *fname, const char *ir_type, long 
             writeLog(LOG_INF, "processed %s -> %s", fname, basename(gszOutFname));
             sprintf(cmd, "mv %s%s %s", gszOutFname, TMPSUF, gszOutFname);
             system(cmd);
+            chmod(gszOutFname, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
         }
         
-        writeLog(LOG_INF, "%s done, common=%d not_found(imsi=%d, pmn=%d) reject=%d total=%d file_time_used=%d sec", fname, cntr_wrt, cntr_imsi, cntr_pmn, cntr_rej, line_cnt, (t_stop - t_start));
-
+        logState(dir, fname, ir_type);
+        writeLog(LOG_INF, "%s done, process(id%d) common=%d skip=%d not_found(imsi=%d, pmn=%d) reject=%d total=%d file_time_used=%d sec", fname, gnPrcId, cntr_wrt, cnt_skip, cntr_imsi, cntr_pmn, cntr_rej, line_cnt, (t_stop - t_start));
+#if 0
         if ( *gszIniParCommon[E_BCKUP] == 'Y' ) {
             char cmd[SIZE_ITEM_L];
             memset(cmd, 0x00, sizeof(cmd));
             sprintf(cmd, "cp -p %s %s", full_ir_name, gszIniParCommon[E_BCKUP_DIR]);
             system(cmd);
         }
-#if 1
         unlink(full_ir_name);
 #endif
     }
+
+}
+
+int olderThan(int day, const char *sdir, const char *fname)
+{
+    struct stat stat_buf;
+    time_t systime = 0;
+    int    result = FALSE;
+    char   full_name[SIZE_ITEM_L];
+    long   file_age = 0;
+    long   bound = (long)(day * SEC_IN_DAY);
+    
+    memset(full_name, 0x00, sizeof(full_name));
+    
+    memset(&stat_buf, 0x00, sizeof(stat_buf));
+    if ( !lstat(full_name, &stat_buf) ) {
+        systime = time(NULL);
+        file_age = (long)(systime - stat_buf.st_mtime);
+        if ( file_age > bound ) {
+            result = TRUE;
+        }
+    }
+writeLog(LOG_DB2, "%s olderThan %d days (%ld sec) ", fname, day, file_age);
+    return result;
 
 }
 
@@ -1405,10 +1630,9 @@ int wrtOutIrCommon(const char *odir, const char *ir_type, const char *file_dtm, 
 {
     char full_irfile[SIZE_ITEM_L];
     if ( *ofp == NULL ) {
-        ( ++gnFileSeq > 999 ? gnFileSeq = 0 : gnFileSeq );
         memset(gszOutFname, 0x00, sizeof(gszOutFname));
         memset(full_irfile, 0x00, sizeof(full_irfile));
-        sprintf(gszOutFname, "%s/%s_%s_%s_%03d%s", odir, gszIniParOutput[E_OUT_FPREF], ir_type, file_dtm, gnFileSeq, gszIniParOutput[E_OUT_FSUFF]);
+        sprintf(gszOutFname, "%s/%s_%s_%s%s", odir, gszIniParOutput[E_OUT_FPREF], ir_type, file_dtm, gszIniParOutput[E_OUT_FSUFF]);
         sprintf(full_irfile, "%s%s", gszOutFname, TMPSUF);
         if ( (*ofp = fopen(full_irfile, "a")) == NULL ) {
             writeLog(LOG_SYS, "unable to open append %s (%s)", full_irfile, strerror(errno));
@@ -1434,7 +1658,7 @@ int wrtOutReject(const char *odir, const char *fname, FILE **ofp, const char *re
 
     char full_rejfile[SIZE_ITEM_L];
     if ( *ofp == NULL ) {
-        sprintf(full_rejfile, "%s/%s.REJ", odir, fname);
+        sprintf(full_rejfile, "%s/%s.%dREJ", odir, fname, gnPrcId);
         if ( (*ofp = fopen(full_rejfile, "a")) == NULL ) {
             writeLog(LOG_SYS, "unable to open append %s (%s)", full_rejfile, strerror(errno));
             return FAILED;
@@ -1485,7 +1709,7 @@ int wrtAlrtDbConnFail(const char *odir, const char *fname, const char *dbsvr)
     char full_dbconfile[SIZE_ITEM_L];
     FILE *ofp = NULL;
 
-    sprintf(full_dbconfile, "%s/%s_dbcon_%s%s", odir, gszAppName, fname, ALERT_SUFF);
+    sprintf(full_dbconfile, "%s/%s_dbcon_%s%d%s", odir, gszAppName, fname, gnPrcId, ALERT_SUFF);
     if ( (ofp = fopen(full_dbconfile, "a")) == NULL ) {
         writeLog(LOG_SYS, "unable to open append %s (%s)", full_dbconfile, strerror(errno));
         return FAILED;
