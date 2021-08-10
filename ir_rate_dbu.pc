@@ -1,0 +1,1386 @@
+///
+///
+/// FACILITY    : db utility for rating and mapping of ir cdr
+///
+/// FILE NAME   : ir_rate_dbu.pc
+///
+/// AUTHOR      : Thanakorn Nitipiromchai
+///
+/// CREATE DATE : 15-May-2019
+///
+/// CURRENT VERSION NO : 1.0
+///
+/// LAST RELEASE DATE  : 15-May-2019
+///
+/// MODIFICATION HISTORY :
+///     1.0     15-May-2019     First Version
+///
+///
+#include "ir_rate_dbu.h"
+#include <sqlca.h>
+#include <sqlda.h>
+#include <sqlcpr.h>
+
+EXEC SQL INCLUDE SQLCA;
+// EXEC SQL BEGIN DECLARE SECTION;
+    // VARCHAR gv_vcFrmUsr[40];
+    // VARCHAR gv_vcFrmPwd[40];
+    // VARCHAR gv_vcFrmConnect[40];
+
+    // VARCHAR gv_vcFrmCUsr[40];
+    // VARCHAR gv_vcFrmCPwd[40];
+    // VARCHAR gv_vcFrmCConnect[40];
+// EXEC SQL END DECLARE SECTION;
+
+ONETARIFF_TAB    *gOneTar = NULL;
+ONETARIFF_TAB    *gOneTarAvgPmn = NULL;
+ONETARIFF_TAB    *gOneTarAvgAll = NULL;
+RISK_BNO_TAB     *gRiskBno = NULL;
+CALL_TYPE_TAB    *gCallType = NULL;
+COUNTRY_CODE_TAB *gCountryCode = NULL;
+PMN_INFO_TAB     *gPmnInfo = NULL;
+
+int gnOneTarRecCnt = 0;
+int gnOneTarAvgPmnRecCnt = 0;
+int gnOneTarAvgAllRecCnt = 0;
+int gnRiskBnoRecCnt = 0;
+int gnCallTypeRecCnt = 0;
+int gnCountryCodeRecCnt = 0;
+int gnPmnInfoCnt = 0;
+
+// int connAllDb(char *szFrmUsr, char *szFrmPwd, char *szFrmSvr, char *szSffUsr, char *szSffPwd, char *szSffSvr)
+// {
+
+    // if ( connectDbFrm(szFrmUsr, szFrmPwd, szFrmSvr) == SUCCESS ) {
+        // if ( connectDbSff(szSffUsr, szSffPwd, szSffSvr) == SUCCESS ) {
+            // return SUCCESS;
+        // }
+        // else {
+            // return FAILED;
+        // }
+    // }
+    // else {
+        // return FAILED;
+    // }
+
+// }
+
+int connectDbSub(char *szDbUsr, char *szDbPwd, char *szDbSvr, int nRetryCnt, int nRetryWait)
+{
+
+    int retry = nRetryCnt;
+    int result = SUCCESS;
+
+    EXEC SQL DECLARE SUB_DB DATABASE;
+    do {
+        writeLog(LOG_INF, "%sconnecting %s db ...", ( retry != nRetryCnt ? "retry " : "" ), szDbSvr);
+        EXEC SQL CONNECT :szDbUsr IDENTIFIED BY :szDbPwd AT SUB_DB USING :szDbSvr;
+        if (sqlca.sqlcode == SUCCESS) {
+            return SUCCESS;
+        }
+        else {
+            trimStr(trimStr(sqlca.sqlerrm.sqlerrmc));
+            writeLog(LOG_ERR, "connectDbSub failed ora(%d) - %s", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+            result = FAILED;
+            sleep(nRetryWait);
+        }
+        retry--;
+    }
+    while ( retry > 0 );
+
+    return result;
+
+}
+
+int connectDbSff(char *szDbUsr, char *szDbPwd, char *szDbSvr, int nRetryCnt, int nRetryWait)
+{
+
+    int retry = nRetryCnt;
+    int result = SUCCESS;
+
+    EXEC SQL DECLARE SFF_DB DATABASE;
+    do {
+        writeLog(LOG_INF, "%sconnecting %s db ...", ( retry != nRetryCnt ? "retry " : "" ), szDbSvr);
+        EXEC SQL CONNECT :szDbUsr IDENTIFIED BY :szDbPwd AT SFF_DB USING :szDbSvr;
+        if (sqlca.sqlcode == SUCCESS) {
+            return SUCCESS;
+        }
+        else {
+            trimStr(trimStr(sqlca.sqlerrm.sqlerrmc));
+            writeLog(LOG_ERR, "connectDbSff failed ora(%d) - %s", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+            result = FAILED;
+            sleep(nRetryWait);
+        }
+        retry--;
+    } while ( retry > 0 );
+
+    return result;
+
+}
+
+int connectDbPpi(char *szDbUsr, char *szDbPwd, char *szDbSvr, int nRetryCnt, int nRetryWait)
+{
+
+    int retry = nRetryCnt;
+    int result = SUCCESS;
+
+    EXEC SQL DECLARE PPI_DB DATABASE;
+    do {
+        writeLog(LOG_INF, "%sconnecting %s db ...", ( retry != nRetryCnt ? "retry " : "" ), szDbSvr);
+        EXEC SQL CONNECT :szDbUsr IDENTIFIED BY :szDbPwd AT PPI_DB USING :szDbSvr;
+        if (sqlca.sqlcode == SUCCESS) {
+            return SUCCESS;
+        }
+        else {
+            trimStr(trimStr(sqlca.sqlerrm.sqlerrmc));
+            writeLog(LOG_ERR, "connectDbPpi failed ora(%d) - %s", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+            result = FAILED;
+            sleep(nRetryWait);
+        }
+        retry--;
+    } while ( retry > 0 );
+
+    return result;
+
+}
+
+// void discAllDb()
+// {
+
+    // EXEC SQL AT SUB_DB COMMIT WORK RELEASE;
+    // EXEC SQL AT SFF_DB COMMIT WORK RELEASE;
+    // writeLog(LOG_INF, "dbs disconnected.");
+
+// }
+
+void disconnSub(char *dbsvr)
+{
+    EXEC SQL AT SUB_DB COMMIT WORK RELEASE;
+    writeLog(LOG_INF, "disconnected from %s", dbsvr);
+}
+
+void disconnSff(char *dbsvr)
+{
+    EXEC SQL AT SFF_DB COMMIT WORK RELEASE;
+    writeLog(LOG_INF, "disconnected from %s", dbsvr);
+}
+
+void disconnPpi(char *dbsvr)
+{
+    EXEC SQL AT PPI_DB COMMIT WORK RELEASE;
+    writeLog(LOG_INF, "disconnected from %s", dbsvr);
+}
+
+int loadOneTariff()
+{
+
+    VARCHAR szSql[SIZE_BUFF];
+    int nRecCnt = 0, nCnt = 0, db_err_cnt = 0;
+
+    char pmn_code[SIZE_PMN_CODE];
+    char countrycode[SIZE_COUNTRY_CODE];
+    int  mtc_chr;
+    int  gprs_chr;
+    int  smst_chr;
+    int  smso_chr;
+    int  moc_chr_to_th;
+    int  moc_chr_local;
+    int  moc_chr_inter;
+    int  gprs_min;
+    int  gprs_round;
+    char charge_type[SIZE_CHRG_TYPE];
+    char idd_acc_code[SIZE_IDD_ACC_CODE];
+
+
+    // get total number of record for mem allocation
+    EXEC SQL AT SUB_DB SELECT COUNT(1) INTO :nRecCnt FROM IR_ONETARIFF_RATE WHERE PMN_CODE IS NOT NULL;
+
+    if ( sqlca.sqlcode == SUCCESS ) {
+        gOneTar = (ONETARIFF_TAB *)calloc(nRecCnt, sizeof(ONETARIFF_TAB));
+        if ( gOneTar == NULL ) {
+            writeLog(LOG_ERR, "loadOneTariff: mem alloc failure for %d recs", nRecCnt);
+            return FAILED;
+        }
+    }
+    else {
+        trimStr(trimStr(sqlca.sqlerrm.sqlerrmc));
+        writeLog(LOG_ERR, "loadOneTariff: Ora(%d) error on select IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+        return FAILED;
+    }
+
+    // ---------- start query data --------
+    strcpy((char*)szSql.arr, "SELECT PMN_CODE, COUNTRYCODE, MTC_CHR, GPRS_CHR, SMST_CHR, SMSO_CHR, MOC_CHR_TO_THAILAND, MOC_CHR_LOCAL, MOC_CHR_INTER, GPRS_MIN, GPRS_ROUND, NVL(CHARGE_TYPE, ' '), NVL(IDD_ACCESS_CODE, ' ') FROM IR_ONETARIFF_RATE WHERE PMN_CODE IS NOT NULL ORDER BY PMN_CODE, CHARGE_TYPE");
+    szSql.len = strlen((char*)szSql.arr);
+    writeLog(LOG_DB1, (char*)szSql.arr);
+
+    EXEC SQL AT SUB_DB PREPARE orcStmt FROM :szSql;
+    EXEC SQL AT SUB_DB DECLARE orcOneCrs CURSOR FOR orcStmt;
+    EXEC SQL AT SUB_DB OPEN orcOneCrs;
+
+    if ( sqlca.sqlcode < SUCCESS ) {
+        writeLog(LOG_ERR, "loadOneTariff: Ora(%d) Open orcOneCrs Error on IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL AT SUB_DB CLOSE orcOneCrs;
+        return FAILED;
+    }
+
+    while ( TRUE ) {
+
+        memset(pmn_code, 0x00, sizeof(pmn_code));
+        memset(countrycode, 0x00, sizeof(countrycode));
+        memset(charge_type, 0x00, sizeof(charge_type));
+        memset(idd_acc_code, 0x00, sizeof(idd_acc_code));
+
+        EXEC SQL AT SUB_DB FETCH orcOneCrs INTO
+                :pmn_code,
+                :countrycode,
+                :mtc_chr,
+                :gprs_chr,
+                :smst_chr,
+                :smso_chr,
+                :moc_chr_to_th,
+                :moc_chr_local,
+                :moc_chr_inter,
+                :gprs_min,
+                :gprs_round,
+                :charge_type,
+                :idd_acc_code;
+
+        if ( sqlca.sqlcode != SUCCESS ) {
+            if ( sqlca.sqlcode == NOT_FOUND ) {
+                break;
+            }
+            else if ( db_err_cnt > FETCH_ERR_ALLOW ) {
+                writeLog(LOG_ERR, "loadOneTariff: Ora(%d) fetching orcOneCrs exceeded(%d) on IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, db_err_cnt, trimStr(sqlca.sqlerrm.sqlerrmc));
+                break;
+            }
+            else {
+                writeLog(LOG_WRN, "loadOneTariff: Ora(%d) fetching orcOneCrs Error on IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+                db_err_cnt++;
+                continue;
+            }
+        }
+        if ( nCnt <= nRecCnt ) {   /* prevention of more data record added after counting */
+//printf("pmn '%s'", pmn_code);
+            trimStr(pmn_code);
+//printf(" -> '%s'\ncntr '%s'", pmn_code, countrycode);
+            trimStr(countrycode);
+            trimStr(charge_type);
+            trimStr(idd_acc_code);
+
+            //strcpy(gOneTar[nCnt].pmn, pmn_code);
+            strToUpper(gOneTar[nCnt].pmn, pmn_code);
+            strcpy(gOneTar[nCnt].charge_type, charge_type);
+            strcpy(gOneTar[nCnt].country_code, countrycode);
+            strcpy(gOneTar[nCnt].idd_acc_code, idd_acc_code);
+
+            gOneTar[nCnt].tariff[E_MTC_CHR] = mtc_chr;
+            gOneTar[nCnt].tariff[E_GPRS_CHR] = gprs_chr;
+            gOneTar[nCnt].tariff[E_SMST_CHR] = smst_chr;
+            gOneTar[nCnt].tariff[E_SMSO_CHR] = smso_chr;
+            gOneTar[nCnt].tariff[E_MOC_CHR_TO_TH] = moc_chr_to_th;
+            gOneTar[nCnt].tariff[E_MOC_CHR_LOCAL] = moc_chr_local;
+            gOneTar[nCnt].tariff[E_MOC_CHR_INTER] = moc_chr_inter;
+
+            gOneTar[nCnt].gprs_min = gprs_min;
+            gOneTar[nCnt].gprs_round = gprs_round;
+        }
+        nCnt++;
+
+    }   /* End of outer while loop (1) */
+    EXEC SQL AT SUB_DB CLOSE orcOneCrs;
+
+    if ( nCnt > nRecCnt ) {
+        writeLog(LOG_ERR, "loadOneTariff: record load(%d) and record count(%d) mismatch", nCnt, nRecCnt);
+        return FAILED;
+    }
+    else {
+// int i = 0, j = 0;
+// for(j=0; j<nCnt; j++) {
+// printf("\not_tab: pmn(%s), ct(%s), cc(%s), id(%s), gm(%d), gr(%d)\n", gOneTar[j].pmn, gOneTar[j].charge_type, gOneTar[j].country_code, gOneTar[j].idd_acc_code, gOneTar[j].gprs_min, gOneTar[j].gprs_round);
+// for(i=0; i<NOF_ONE_TARIFF; i++) { printf("\t%02d\t'%010d'\n", i+1, gOneTar[j].tariff[i]); }
+// printf("\n");
+// }
+        return nCnt;
+    }
+
+}
+
+int loadOneTariffAvgPmn()
+{
+    VARCHAR szSql[SIZE_BUFF];
+    int nRecCnt = 0, nCnt = 0, db_err_cnt = 0;
+
+    char  pmn_code[SIZE_PMN_CODE];
+    char  countrycode[SIZE_COUNTRY_CODE];
+    float mtc_chr;
+    float gprs_chr;
+    float smst_chr;
+    float smso_chr;
+    float moc_chr_to_th;
+    float moc_chr_local;
+    float moc_chr_inter;
+    float gprs_min;
+    float gprs_round;
+    char  charge_type[SIZE_CHRG_TYPE];
+    char  idd_acc_code[SIZE_IDD_ACC_CODE];
+
+
+    // get total number of record for mem allocation
+    EXEC SQL AT SUB_DB SELECT COUNT(1) INTO :nRecCnt FROM (SELECT COUNT(1), SUBSTR(PMN_CODE, 1, 3), CHARGE_TYPE FROM IR_ONETARIFF_RATE WHERE PMN_CODE IS NOT NULL GROUP BY SUBSTR(PMN_CODE, 1, 3), CHARGE_TYPE);
+
+    if ( sqlca.sqlcode == SUCCESS ) {
+        gOneTarAvgPmn = (ONETARIFF_TAB *)calloc(nRecCnt, sizeof(ONETARIFF_TAB));
+        if ( gOneTarAvgPmn == NULL ) {
+            writeLog(LOG_ERR, "loadOneTariffAvgPmn: mem alloc failure for %d recs", nRecCnt);
+            return FAILED;
+        }
+    }
+    else {
+        trimStr(trimStr(sqlca.sqlerrm.sqlerrmc));
+        writeLog(LOG_ERR, "loadOneTariffAvgPmn: Ora(%d) error on select IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+        return FAILED;
+    }
+
+    // ---------- start query data --------
+    strcpy((char*)szSql.arr, "SELECT SUBSTR(PMN_CODE, 1, 3), MAX(COUNTRYCODE), " \
+                             "ROUND(SUM(MTC_CHR)/COUNT(1)), ROUND(SUM(GPRS_CHR)/COUNT(1)), " \
+                             "ROUND(SUM(SMST_CHR)/COUNT(1)), ROUND(SUM(SMSO_CHR)/COUNT(1)), " \
+                             "ROUND(SUM(MOC_CHR_TO_THAILAND)/COUNT(1)), ROUND(SUM(MOC_CHR_LOCAL)/COUNT(1)), " \
+                             "ROUND(SUM(MOC_CHR_INTER)/COUNT(1)), ROUND(SUM(GPRS_MIN)/COUNT(1)), " \
+                             "ROUND(SUM(GPRS_ROUND)/COUNT(1)), " \
+                             "NVL(CHARGE_TYPE, ' '), NVL(MAX(IDD_ACCESS_CODE), ' ') FROM IR_ONETARIFF_RATE " \
+                             "GROUP BY SUBSTR(PMN_CODE, 1, 3), CHARGE_TYPE " \
+                             "ORDER BY SUBSTR(PMN_CODE, 1, 3), CHARGE_TYPE");
+    szSql.len = strlen((char*)szSql.arr);
+    writeLog(LOG_DB1, (char*)szSql.arr);
+
+    EXEC SQL AT SUB_DB PREPARE orcStmt FROM :szSql;
+    EXEC SQL AT SUB_DB DECLARE orcOneAvgPmnCrs CURSOR FOR orcStmt;
+    EXEC SQL AT SUB_DB OPEN orcOneAvgPmnCrs;
+
+    if ( sqlca.sqlcode < SUCCESS ) {
+        writeLog(LOG_ERR, "loadOneTariffAvgPmn: Ora(%d) Open orcOneAvgPmnCrs Error on IR_ONETARIFF_RATE table", sqlca.sqlcode);
+        EXEC SQL AT SUB_DB CLOSE orcOneAvgPmnCrs;
+        return FAILED;
+    }
+
+    while ( TRUE ) {
+        memset(pmn_code, 0x00, sizeof(pmn_code));
+        memset(countrycode, 0x00, sizeof(countrycode));
+        memset(charge_type, 0x00, sizeof(charge_type));
+        memset(idd_acc_code, 0x00, sizeof(idd_acc_code));
+        EXEC SQL AT SUB_DB FETCH orcOneAvgPmnCrs INTO
+                :pmn_code,
+                :countrycode,
+                :mtc_chr,
+                :gprs_chr,
+                :smst_chr,
+                :smso_chr,
+                :moc_chr_to_th,
+                :moc_chr_local,
+                :moc_chr_inter,
+                :gprs_min,
+                :gprs_round,
+                :charge_type,
+                :idd_acc_code;
+
+        if ( sqlca.sqlcode != SUCCESS ) {
+            if ( sqlca.sqlcode == NOT_FOUND ) {
+                break;
+            }
+            else if ( db_err_cnt > FETCH_ERR_ALLOW ) {
+                writeLog(LOG_ERR, "loadOneTariffAvgPmn: Ora(%d) fetching orcOneAvgPmnCrs exceeded(%d) on IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, db_err_cnt, trimStr(sqlca.sqlerrm.sqlerrmc));
+                break;
+            }
+            else {
+                writeLog(LOG_WRN, "loadOneTariffAvgPmn: Ora(%d) fetching orcOneAvgPmnCrs Error on IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+                db_err_cnt++;
+                continue;
+            }
+        }
+        if ( nCnt <= nRecCnt ) {   /* prevention of more data record added after counting */
+            trimStr(pmn_code);
+            trimStr(countrycode);
+            trimStr(charge_type);
+            trimStr(idd_acc_code);
+
+            //strcpy(gOneTarAvgPmn[nCnt].pmn, pmn_code);
+            strToUpper(gOneTarAvgPmn[nCnt].pmn, pmn_code);
+            strcpy(gOneTarAvgPmn[nCnt].charge_type, charge_type);
+            strcpy(gOneTarAvgPmn[nCnt].country_code, countrycode);
+            strcpy(gOneTarAvgPmn[nCnt].idd_acc_code, idd_acc_code);
+
+            gOneTarAvgPmn[nCnt].tariff[E_MTC_CHR] = mtc_chr;
+            gOneTarAvgPmn[nCnt].tariff[E_GPRS_CHR] = gprs_chr;
+            gOneTarAvgPmn[nCnt].tariff[E_SMST_CHR] = smst_chr;
+            gOneTarAvgPmn[nCnt].tariff[E_SMSO_CHR] = smso_chr;
+            gOneTarAvgPmn[nCnt].tariff[E_MOC_CHR_TO_TH] = moc_chr_to_th;
+            gOneTarAvgPmn[nCnt].tariff[E_MOC_CHR_LOCAL] = moc_chr_local;
+            gOneTarAvgPmn[nCnt].tariff[E_MOC_CHR_INTER] = moc_chr_inter;
+
+            gOneTarAvgPmn[nCnt].gprs_min = gprs_min;
+            gOneTarAvgPmn[nCnt].gprs_round = gprs_round;
+        }
+        nCnt++;
+
+    }   /* End of outer while loop (1) */
+    EXEC SQL AT SUB_DB CLOSE orcOneAvgPmnCrs;
+
+    if ( nCnt > nRecCnt ) {
+        writeLog(LOG_ERR, "loadOneTariffAvgPmn: record load(%d) and record count(%d) mismatch", nCnt, nRecCnt);
+        return FAILED;
+    }
+    else {
+        return nCnt;
+    }
+}
+
+int loadOneTariffAvgAll()
+{
+    VARCHAR szSql[SIZE_BUFF];
+    int nRecCnt = 0, nCnt = 0, db_err_cnt = 0;
+
+    //char  pmn_code[SIZE_PMN_CODE];
+    //char  countrycode[SIZE_COUNTRY_CODE];
+    float mtc_chr;
+    float gprs_chr;
+    float smst_chr;
+    float smso_chr;
+    float moc_chr_to_th;
+    float moc_chr_local;
+    float moc_chr_inter;
+    float gprs_min;
+    float gprs_round;
+    char  charge_type[SIZE_CHRG_TYPE];
+    //char  idd_acc_code[SIZE_IDD_ACC_CODE];
+
+
+    nRecCnt = 2;    // charge type have only prepaid and postpaid
+    gOneTarAvgAll = (ONETARIFF_TAB *)calloc(nRecCnt, sizeof(ONETARIFF_TAB));
+    if ( gOneTarAvgAll == NULL ) {
+        writeLog(LOG_ERR, "loadOneTariffAvgAll: mem alloc failure for %d recs", nRecCnt);
+        return FAILED;
+    }
+
+    // ---------- start query data --------
+    strcpy((char*)szSql.arr, "SELECT ROUND(SUM(MTC_CHR)/COUNT(1)), ROUND(SUM(GPRS_CHR)/COUNT(1)), " \
+                             "ROUND(SUM(SMST_CHR)/COUNT(1)), ROUND(SUM(SMSO_CHR)/COUNT(1)), " \
+                             "ROUND(SUM(MOC_CHR_TO_THAILAND)/COUNT(1)), ROUND(SUM(MOC_CHR_LOCAL)/COUNT(1)), " \
+                             "ROUND(SUM(MOC_CHR_INTER)/COUNT(1)), ROUND(SUM(GPRS_MIN)/COUNT(1)), " \
+                             "ROUND(SUM(GPRS_ROUND)/COUNT(1)), NVL(CHARGE_TYPE, ' ') " \
+                             "FROM IR_ONETARIFF_RATE GROUP BY CHARGE_TYPE ORDER BY CHARGE_TYPE");
+    szSql.len = strlen((char*)szSql.arr);
+    writeLog(LOG_DB1, (char*)szSql.arr);
+
+    EXEC SQL AT SUB_DB PREPARE orcStmt FROM :szSql;
+    EXEC SQL AT SUB_DB DECLARE orcOneAvgAllCrs CURSOR FOR orcStmt;
+    EXEC SQL AT SUB_DB OPEN orcOneAvgAllCrs;
+
+    if ( sqlca.sqlcode < SUCCESS ) {
+        writeLog(LOG_ERR, "loadOneTariffAvgAll: Ora(%d) Open orcOneAvgAllCrs Error on IR_ONETARIFF_RATE table", sqlca.sqlcode);
+        EXEC SQL AT SUB_DB CLOSE orcOneAvgAllCrs;
+        return FAILED;
+    }
+
+    while ( TRUE ) {
+        //memset(pmn_code, 0x00, sizeof(pmn_code));
+        //memset(countrycode, 0x00, sizeof(countrycode));
+        memset(charge_type, 0x00, sizeof(charge_type));
+        //memset(idd_acc_code, 0x00, sizeof(idd_acc_code));
+        EXEC SQL AT SUB_DB FETCH orcOneAvgAllCrs INTO
+                //:pmn_code,
+                //:countrycode,
+                :mtc_chr,
+                :gprs_chr,
+                :smst_chr,
+                :smso_chr,
+                :moc_chr_to_th,
+                :moc_chr_local,
+                :moc_chr_inter,
+                :gprs_min,
+                :gprs_round,
+                :charge_type;
+                //:idd_acc_code;
+
+        if ( sqlca.sqlcode != SUCCESS ) {
+            if ( sqlca.sqlcode == NOT_FOUND ) {
+                break;
+            }
+            else if ( db_err_cnt > FETCH_ERR_ALLOW ) {
+                writeLog(LOG_ERR, "loadOneTariffAvgAll: Ora(%d) fetching orcOneAvgAllCrs exceeded(%d) on IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, db_err_cnt, trimStr(sqlca.sqlerrm.sqlerrmc));
+                break;
+            }
+            else {
+                writeLog(LOG_WRN, "loadOneTariffAvgAll: Ora(%d) fetching orcOneAvgAllCrs Error on IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+                db_err_cnt++;
+                continue;
+            }
+        }
+        if ( nCnt <= nRecCnt ) {   /* prevention of more data record added after counting */
+            //trimStr(pmn_code);
+            //trimStr(countrycode);
+            trimStr(charge_type);
+            //trimStr(idd_acc_code);
+
+            //strcpy(gOneTarAvgAll[nCnt].pmn, pmn_code);
+            strcpy(gOneTarAvgAll[nCnt].charge_type, charge_type);
+            //strcpy(gOneTarAvgAll[nCnt].country_code, countrycode);
+            //strcpy(gOneTarAvgAll[nCnt].idd_acc_code, idd_acc_code);
+
+            gOneTarAvgAll[nCnt].tariff[E_MTC_CHR] = mtc_chr;
+            gOneTarAvgAll[nCnt].tariff[E_GPRS_CHR] = gprs_chr;
+            gOneTarAvgAll[nCnt].tariff[E_SMST_CHR] = smst_chr;
+            gOneTarAvgAll[nCnt].tariff[E_SMSO_CHR] = smso_chr;
+            gOneTarAvgAll[nCnt].tariff[E_MOC_CHR_TO_TH] = moc_chr_to_th;
+            gOneTarAvgAll[nCnt].tariff[E_MOC_CHR_LOCAL] = moc_chr_local;
+            gOneTarAvgAll[nCnt].tariff[E_MOC_CHR_INTER] = moc_chr_inter;
+
+            gOneTarAvgAll[nCnt].gprs_min = gprs_min;
+            gOneTarAvgAll[nCnt].gprs_round = gprs_round;
+        }
+        nCnt++;
+
+    }   /* End of outer while loop (1) */
+    EXEC SQL AT SUB_DB CLOSE orcOneAvgAllCrs;
+
+    if ( nCnt > nRecCnt ) {
+        writeLog(LOG_ERR, "loadOneTariffAvgAll: record load(%d) and record count(%d) mismatch", nCnt, nRecCnt);
+        return FAILED;
+    }
+    else {
+        return nCnt;
+    }
+}
+
+int loadRiskBno()
+{
+
+    VARCHAR szSql[SIZE_BUFF];
+    int nRecCnt = 0, nCnt = 0, db_err_cnt = 0;
+
+    int  pat_id;
+    char bno[SIZE_BNO];
+    char cStatus = 'E';
+
+
+    // get total number of record for mem allocation
+    EXEC SQL AT SUB_DB SELECT COUNT(1) INTO :nRecCnt FROM IR_RISK_BNUMBER WHERE STATUS = :cStatus;
+
+    if ( sqlca.sqlcode == SUCCESS ) {
+        gRiskBno = (RISK_BNO_TAB *)calloc(nRecCnt, sizeof(RISK_BNO_TAB));
+        if ( gRiskBno == NULL ) {
+            writeLog(LOG_ERR, "loadRiskBno: mem alloc failure for %d recs", nRecCnt);
+            return FAILED;
+        }
+    }
+    else {
+        trimStr(trimStr(sqlca.sqlerrm.sqlerrmc));
+        writeLog(LOG_ERR, "loadRiskBno: Ora(%d) error on select IR_RISK_BNUMBER table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+        return FAILED;
+    }
+
+    // ---------- start query data --------
+    sprintf((char*)szSql.arr, "SELECT PATTERNID, BNUMBER FROM IR_RISK_BNUMBER WHERE STATUS = '%c' ORDER BY BNUMBER", cStatus);
+    szSql.len = strlen((char*)szSql.arr);
+    writeLog(LOG_DB1, (char*)szSql.arr);
+
+    EXEC SQL AT SUB_DB PREPARE orcStmt FROM :szSql;
+    EXEC SQL AT SUB_DB DECLARE orcRskCrs CURSOR FOR orcStmt;
+    EXEC SQL AT SUB_DB OPEN orcRskCrs;
+
+    if ( sqlca.sqlcode < SUCCESS ) {
+        writeLog(LOG_ERR, "loadRiskBno: Ora(%d) Open orcRskCrs Error on IR_RISK_BNUMBER table", sqlca.sqlcode);
+        EXEC SQL AT SUB_DB CLOSE orcRskCrs;
+        return FAILED;
+    }
+
+    while ( TRUE ) {
+        memset(bno, 0x00, sizeof(bno));
+        EXEC SQL AT SUB_DB FETCH orcRskCrs INTO :pat_id, :bno;
+
+        if ( sqlca.sqlcode != SUCCESS ) {
+            if ( sqlca.sqlcode == NOT_FOUND ) {
+                break;
+            }
+            else if ( db_err_cnt > FETCH_ERR_ALLOW ) {
+                writeLog(LOG_ERR, "loadRiskBno: Ora(%d) fetching orcRskCrs exceeded(%d) on IR_RISK_BNUMBER table (%s)", sqlca.sqlcode, db_err_cnt, trimStr(sqlca.sqlerrm.sqlerrmc));
+                break;
+            }
+            else {
+                writeLog(LOG_WRN, "loadRiskBno: Ora(%d) fetching orcRskCrs Error on IR_RISK_BNUMBER table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+                db_err_cnt++;
+                continue;
+            }
+        }
+        if ( nCnt <= nRecCnt ) {   /* prevention of more data record added after counting */
+            trimStr(bno);
+            strcpy(gRiskBno[nCnt].bno, bno);
+            gRiskBno[nCnt].pat_id = pat_id;
+        }
+        nCnt++;
+
+    }   /* End of outer while loop (1) */
+    EXEC SQL AT SUB_DB CLOSE orcRskCrs;
+
+    if ( nCnt > nRecCnt ) {
+        writeLog(LOG_ERR, "loadRiskBno: record load(%d) and record count(%d) mismatch", nCnt, nRecCnt);
+        return FAILED;
+    }
+    else {
+        return nCnt;
+    }
+
+}
+
+int loadCallType()
+{
+
+    VARCHAR szSql[SIZE_BUFF];
+    int nRecCnt = 0, nCnt = 0, db_err_cnt = 0;
+
+    char evt_type_id[5+1];
+    char sub_evt_type_id[2+1];
+    char modifier[5+1];
+    char call_type[2+1];
+    char chrg_type[1+1];
+    char company_name[3+1];
+
+    // get total number of record for mem allocation
+    EXEC SQL AT SUB_DB SELECT COUNT(1) INTO :nRecCnt FROM CALL_TYPE;
+
+    if ( sqlca.sqlcode == SUCCESS ) {
+        gCallType = (CALL_TYPE_TAB *)calloc(nRecCnt, sizeof(CALL_TYPE_TAB));
+        if ( gCallType == NULL ) {
+            writeLog(LOG_ERR, "loadCallType: mem alloc failure for %d recs", nRecCnt);
+            return FAILED;
+        }
+    }
+    else {
+        trimStr(trimStr(sqlca.sqlerrm.sqlerrmc));
+        writeLog(LOG_ERR, "loadCallType: Ora(%d) error on select CALL_TYPE table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+        return FAILED;
+    }
+
+    // ---------- start query data --------
+    strcpy((char*)szSql.arr, "SELECT EVENT_TYPE_ID, SUB_EVENT_TYPE_ID, MODIFIER, CALL_TYPE, CHRG_TYPE, COMPANY_NAME FROM CALL_TYPE ORDER BY EVENT_TYPE_ID, SUB_EVENT_TYPE_ID, MODIFIER");
+
+    szSql.len = strlen((char*)szSql.arr);
+    writeLog(LOG_DB1, (char*)szSql.arr);
+
+    EXEC SQL AT SUB_DB PREPARE orcStmt FROM :szSql;
+    EXEC SQL AT SUB_DB DECLARE orcCallCrs CURSOR FOR orcStmt;
+    EXEC SQL AT SUB_DB OPEN orcCallCrs;
+
+    if ( sqlca.sqlcode < SUCCESS ) {
+        writeLog(LOG_ERR, "loadCallType: Ora(%d) Open orcCallCrs Error on CALL_TYPE table", sqlca.sqlcode);
+        EXEC SQL AT SUB_DB CLOSE orcCallCrs;
+        return FAILED;
+    }
+
+    while ( TRUE ) {
+
+        memset(evt_type_id, 0x00, sizeof(evt_type_id));
+        memset(sub_evt_type_id, 0x00, sizeof(sub_evt_type_id));
+        memset(modifier, 0x00, sizeof(modifier));
+        memset(call_type, 0x00, sizeof(call_type));
+        memset(chrg_type, 0x00, sizeof(chrg_type));
+        memset(company_name, 0x00, sizeof(company_name));
+
+        EXEC SQL AT SUB_DB FETCH orcCallCrs INTO
+            :evt_type_id,
+            :sub_evt_type_id,
+            :modifier,
+            :call_type,
+            :chrg_type,
+            :company_name;
+
+        if ( sqlca.sqlcode != SUCCESS ) {
+            if ( sqlca.sqlcode == NOT_FOUND ) {
+                break;
+            }
+            else if ( db_err_cnt > FETCH_ERR_ALLOW ) {
+                writeLog(LOG_ERR, "loadCallType: Ora(%d) fetching orcCallCrs exceeded(%d) on CALL_TYPE table (%s)", sqlca.sqlcode, db_err_cnt, trimStr(sqlca.sqlerrm.sqlerrmc));
+                break;
+            }
+            else {
+                writeLog(LOG_WRN, "loadCallType: Ora(%d) fetching orcCallCrs Error on CALL_TYPE table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+                db_err_cnt++;
+                continue;
+            }
+        }
+        if ( nCnt <= nRecCnt ) {   /* prevention of more data record added after counting */
+//printf("et '%s'", evt_type_id);
+            trimStr(evt_type_id);
+//printf(" -> '%s'\n", evt_type_id);
+//printf("sub '%s'", sub_evt_type_id);
+            trimStr(sub_evt_type_id);
+//printf(" -> '%s'\n", sub_evt_type_id);
+//printf("mod '%s'('%d','%c'  '%d','%c')", modifier, modifier[3], modifier[3], modifier[4], modifier[4]);
+            trimStr(modifier);
+//printf(" -> '%s'\n", modifier);
+            trimStr(call_type);
+            trimStr(chrg_type);
+            trimStr(company_name);
+
+            strcpy(gCallType[nCnt].evt_type_id, evt_type_id);
+            strcpy(gCallType[nCnt].sub_evt_type_id, sub_evt_type_id);
+            //strcpy(gCallType[nCnt].modifier, modifier);
+            strToUpper(gCallType[nCnt].modifier, modifier);
+            strcpy(gCallType[nCnt].call_type, call_type);
+            strcpy(gCallType[nCnt].chrg_type, chrg_type);
+            //strcpy(gCallType[nCnt].company_name, company_name);
+            strToUpper(gCallType[nCnt].company_name, company_name);
+        }
+        nCnt++;
+
+    }   /* End of outer while loop (1) */
+    EXEC SQL AT SUB_DB CLOSE orcCallCrs;
+
+    if ( nCnt > nRecCnt ) {
+        writeLog(LOG_ERR, "loadCallType: record load(%d) and record count(%d) mismatch", nCnt, nRecCnt);
+        return FAILED;
+    }
+    else {
+#if 0
+    int i = 0;
+    for ( i=0; i<nCnt; i++ ) {
+        printf("%03d\tet(%s) sub(%s) mod(%s) cty(%s) chg(%s) com(%s)\n", i+1
+                   , gCallType[i].evt_type_id
+                   , gCallType[i].sub_evt_type_id
+                   , gCallType[i].modifier
+                   , gCallType[i].call_type
+                   , gCallType[i].chrg_type
+                   , gCallType[i].company_name);
+    }
+#endif
+        return nCnt;
+    }
+
+}
+
+int loadCountryCode()
+{
+
+    VARCHAR szSql[SIZE_BUFF];
+    int nRecCnt = 0, nCnt = 0, db_err_cnt = 0;
+    char countrycode[SIZE_COUNTRY_CODE];
+
+    // get total number of record for mem allocation
+    EXEC SQL AT SUB_DB SELECT COUNT(DISTINCT(COUNTRYCODE)) INTO :nRecCnt FROM IR_ONETARIFF_RATE WHERE COUNTRYCODE IS NOT NULL;
+
+    if ( sqlca.sqlcode == SUCCESS ) {
+        gCountryCode = (COUNTRY_CODE_TAB *)calloc(nRecCnt, sizeof(COUNTRY_CODE_TAB));
+        if ( gCountryCode == NULL ) {
+            writeLog(LOG_ERR, "loadCountryCode: mem alloc failure for %d recs", nRecCnt);
+            return FAILED;
+        }
+    }
+    else {
+        trimStr(trimStr(sqlca.sqlerrm.sqlerrmc));
+        writeLog(LOG_ERR, "loadCountryCode: Ora(%d) error on select IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+        return FAILED;
+    }
+
+    // ---------- start query data --------
+    strcpy((char*)szSql.arr, "SELECT DISTINCT(COUNTRYCODE) FROM IR_ONETARIFF_RATE WHERE COUNTRYCODE IS NOT NULL ORDER BY COUNTRYCODE");
+    szSql.len = strlen((char*)szSql.arr);
+    writeLog(LOG_DB1, (char*)szSql.arr);
+
+    EXEC SQL AT SUB_DB PREPARE orcStmt FROM :szSql;
+    EXEC SQL AT SUB_DB DECLARE orcCtyCrs CURSOR FOR orcStmt;
+    EXEC SQL AT SUB_DB OPEN orcCtyCrs;
+
+    if ( sqlca.sqlcode < SUCCESS ) {
+        writeLog(LOG_ERR, "loadCountryCode: Ora(%d) Open orcCtyCrs Error on IR_ONETARIFF_RATE table", sqlca.sqlcode);
+        EXEC SQL AT SUB_DB CLOSE orcCtyCrs;
+        return FAILED;
+    }
+
+    while ( TRUE ) {
+        memset(countrycode, 0x00, sizeof(countrycode));
+        EXEC SQL AT SUB_DB FETCH orcCtyCrs INTO :countrycode;
+
+        if ( sqlca.sqlcode != SUCCESS ) {
+            if ( sqlca.sqlcode == NOT_FOUND ) {
+                break;
+            }
+            else if ( db_err_cnt > FETCH_ERR_ALLOW ) {
+                writeLog(LOG_ERR, "loadCountryCode: Ora(%d) fetching orcCtyCrs exceeded(%d) on IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, db_err_cnt, trimStr(sqlca.sqlerrm.sqlerrmc));
+                break;
+            }
+            else {
+                writeLog(LOG_WRN, "loadCountryCode: Ora(%d) fetching orcCtyCrs Error on IR_ONETARIFF_RATE table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+                db_err_cnt++;
+                continue;
+            }
+        }
+        if ( nCnt <= nRecCnt ) {   /* prevention of more data record added after counting */
+            trimStr(countrycode);
+            strcpy(gCountryCode[nCnt].country_code, countrycode);
+        }
+        nCnt++;
+
+    }   /* End of outer while loop (1) */
+    EXEC SQL AT SUB_DB CLOSE orcCtyCrs;
+
+    if ( nCnt > nRecCnt ) {
+        writeLog(LOG_ERR, "loadCountryCode: record load(%d) and record count(%d) mismatch", nCnt, nRecCnt);
+        return FAILED;
+    }
+    else {
+        return nCnt;
+    }
+
+}
+
+int loadPmnInfo()
+{
+
+    VARCHAR szSql[SIZE_BUFF];
+    int nRecCnt = 0, nCnt = 0, db_err_cnt = 0, tmp = 0;
+    char pmn_code[SIZE_PMN_CODE], prv_pmn_code[SIZE_PMN_CODE];
+    char pmn_name[50];
+    char roam_country[50];
+    char roam_region[50];
+
+    // get total number of record for mem allocation
+    EXEC SQL AT SUB_DB SELECT COUNT(DISTINCT(PMN_CODE)) INTO :nRecCnt FROM IR_PMN_MASTER;
+    if ( sqlca.sqlcode == SUCCESS ) {
+        gPmnInfo = (PMN_INFO_TAB *)calloc(nRecCnt, sizeof(PMN_INFO_TAB));
+        if ( gPmnInfo == NULL ) {
+            writeLog(LOG_ERR, "loadPmnInfo: mem alloc failure for %d recs", nRecCnt);
+            return FAILED;
+        }
+    }
+    else {
+        trimStr(trimStr(sqlca.sqlerrm.sqlerrmc));
+        writeLog(LOG_ERR, "loadPmnInfo: Ora(%d) error on select IR_PMN_MASTER table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+        return FAILED;
+    }
+
+    // ---------- start query data --------
+    strcpy((char*)szSql.arr, "SELECT COUNT(1) TMP, PMN_CODE, OPERATOR_NAME, DESC_ENG, DISPLAY_VALUE FROM IR_PMN_MASTER GROUP BY PMN_CODE, OPERATOR_NAME, DESC_ENG, DISPLAY_VALUE ORDER BY PMN_CODE, OPERATOR_NAME, DESC_ENG, DISPLAY_VALUE");
+    szSql.len = strlen((char*)szSql.arr);
+    writeLog(LOG_DB1, (char*)szSql.arr);
+
+    EXEC SQL AT SUB_DB PREPARE orcStmt FROM :szSql;
+    EXEC SQL AT SUB_DB DECLARE orcPmnInfCrs CURSOR FOR orcStmt;
+    EXEC SQL AT SUB_DB OPEN orcPmnInfCrs;
+
+    if ( sqlca.sqlcode < SUCCESS ) {
+        writeLog(LOG_ERR, "loadPmnInfo: Ora(%d) Open orcPmnInfCrs Error on IR_PMN_MASTER table", sqlca.sqlcode);
+        EXEC SQL AT SUB_DB CLOSE orcPmnInfCrs;
+        return FAILED;
+    }
+
+    memset(prv_pmn_code, 0x00, sizeof(prv_pmn_code));
+    while ( TRUE ) {
+        
+        memset(pmn_code, 0x00, sizeof(pmn_code));
+        memset(pmn_name, 0x00, sizeof(pmn_name));
+        memset(roam_country, 0x00, sizeof(roam_country));
+        memset(roam_region, 0x00, sizeof(roam_region));
+
+        EXEC SQL AT SUB_DB FETCH orcPmnInfCrs INTO :tmp, :pmn_code, :pmn_name, :roam_country, :roam_region;
+
+        if ( sqlca.sqlcode != SUCCESS ) {
+            if ( sqlca.sqlcode == NOT_FOUND ) {
+                break;
+            }
+            else if ( db_err_cnt > FETCH_ERR_ALLOW ) {
+                writeLog(LOG_ERR, "loadPmnInfo: Ora(%d) fetching orcPmnInfCrs exceeded(%d) on IR_PMN_MASTER table (%s)", sqlca.sqlcode, db_err_cnt, trimStr(sqlca.sqlerrm.sqlerrmc));
+                break;
+            }
+            else {
+                writeLog(LOG_WRN, "loadPmnInfo: Ora(%d) fetching orcPmnInfCrs Error on IR_PMN_MASTER table (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+                db_err_cnt++;
+                continue;
+            }
+        }
+        if ( nCnt <= nRecCnt ) {   /* prevention of more data record added after counting */
+            trimStr(pmn_code);
+            trimStr(pmn_name);
+            trimStr(roam_country);
+            trimStr(roam_region);
+
+            if ( strcmp(prv_pmn_code, pmn_code) != 0 ) {
+                strcpy(gPmnInfo[nCnt].pmn_code, pmn_code);
+                strcpy(gPmnInfo[nCnt].pmn_name, pmn_name);
+                strcpy(gPmnInfo[nCnt].roam_country, roam_country);
+                strcpy(gPmnInfo[nCnt].roam_region, roam_region);
+                strcpy(prv_pmn_code, pmn_code);
+                nCnt++;
+            }
+        }
+
+    }   /* End of outer while loop (1) */
+    EXEC SQL AT SUB_DB CLOSE orcPmnInfCrs;
+
+    if ( nCnt > nRecCnt ) {
+        writeLog(LOG_ERR, "loadPmnInfo: record load(%d) and record count(%d) mismatch", nCnt, nRecCnt);
+        return FAILED;
+    }
+    else {
+        return nCnt;
+    }
+
+}
+
+int loadTables()
+{
+
+    freeTab();
+
+    if ( (gnOneTarRecCnt = loadOneTariff()) > 0 ) {
+        writeLog(LOG_INF, "loaded %d recs of OneTariff Table", gnOneTarRecCnt);
+    }
+    else {
+        return FAILED;
+    }
+
+    if ( (gnOneTarAvgPmnRecCnt = loadOneTariffAvgPmn()) > 0 ) {
+        writeLog(LOG_INF, "loaded %d recs of OneTariff(Avg Pmn) Table", gnOneTarAvgPmnRecCnt);
+    }
+    else {
+        return FAILED;
+    }
+
+    if ( (gnOneTarAvgAllRecCnt = loadOneTariffAvgAll()) > 0 ) {
+        writeLog(LOG_INF, "loaded %d recs of OneTariff(Avg All) Table", gnOneTarAvgAllRecCnt);
+    }
+    else {
+        return FAILED;
+    }
+
+    if ( (gnRiskBnoRecCnt = loadRiskBno()) > 0 ) {
+        writeLog(LOG_INF, "loaded %d recs of RiskBno Table", gnRiskBnoRecCnt);
+    }
+    else {
+        return FAILED;
+    }
+
+    if ( (gnCallTypeRecCnt = loadCallType()) > 0 ) {
+        writeLog(LOG_INF, "loaded %d recs of CallType Table", gnCallTypeRecCnt);
+    }
+    else {
+        return FAILED;
+    }
+
+    if ( (gnCountryCodeRecCnt = loadCountryCode()) > 0 ) {
+        writeLog(LOG_INF, "loaded %d recs of CountryCode (OneTariff Table)", gnCountryCodeRecCnt);
+    }
+    else {
+        return FAILED;
+    }
+    
+    if ( (gnPmnInfoCnt = loadPmnInfo()) > 0 ) {
+        writeLog(LOG_INF, "loaded %d recs of PmnInfo (IR_PMN_MASTER Table)", gnPmnInfoCnt);
+    }
+    else {
+        return FAILED;
+    }
+
+    return SUCCESS;
+
+}
+
+void freeTab()
+{
+    if ( gOneTar != NULL && gnOneTarRecCnt > 0 ) {
+        free(gOneTar);
+        gOneTar = NULL;
+        gnOneTarRecCnt = 0;
+    }
+    if ( gOneTarAvgPmn != NULL && gnOneTarAvgPmnRecCnt > 0 ) {
+        free(gOneTarAvgPmn);
+        gOneTarAvgPmn = NULL;
+        gnOneTarAvgPmnRecCnt = 0;
+    }
+    if ( gOneTarAvgAll != NULL && gnOneTarAvgAllRecCnt > 0 ) {
+        free(gOneTarAvgAll);
+        gOneTarAvgAll = NULL;
+        gnOneTarAvgAllRecCnt = 0;
+    }
+    if ( gRiskBno != NULL && gnRiskBnoRecCnt > 0 ) {
+        free(gRiskBno);
+        gRiskBno = NULL;
+        gnRiskBnoRecCnt = 0;
+    }
+    if ( gCallType != NULL && gnCallTypeRecCnt > 0 ) {
+        free(gCallType);
+        gCallType = NULL;
+        gnCallTypeRecCnt = 0;
+    }
+    if ( gCountryCode != NULL && gnCountryCodeRecCnt > 0 ) {
+        free(gCountryCode);
+        gCountryCode = NULL;
+        gnCountryCodeRecCnt = 0;
+    }
+    if ( gPmnInfo != NULL && gnPmnInfoCnt > 0 ) {
+        free(gPmnInfo);
+        gPmnInfo = NULL;
+        gnPmnInfoCnt = 0;
+    }
+}
+
+int cmpOneTariff(const void *ptr1, const void *ptr2)
+{
+    int rv;
+    rv = strcmp(((ONETARIFF_TAB *)ptr1)->pmn, ((ONETARIFF_TAB *)ptr2)->pmn);
+    if ( rv )
+        return rv;
+
+    return (strcmp(((ONETARIFF_TAB *)ptr1)->charge_type, ((ONETARIFF_TAB *)ptr2)->charge_type));
+}
+
+int cmpRiskBno(const void *ptr1, const void *ptr2)
+{
+    return (strcmp(((RISK_BNO_TAB *)ptr1)->bno, ((RISK_BNO_TAB *)ptr2)->bno));
+}
+
+int cmpCallType(const void *ptr1, const void *ptr2)
+{
+    int rv;
+    rv = strcmp(((CALL_TYPE_TAB *)ptr1)->evt_type_id, ((CALL_TYPE_TAB *)ptr2)->evt_type_id);
+    if ( rv )
+        return rv;
+    rv = strcmp(((CALL_TYPE_TAB *)ptr1)->sub_evt_type_id, ((CALL_TYPE_TAB *)ptr2)->sub_evt_type_id);
+    if ( rv )
+        return rv;
+    return (strcmp(((CALL_TYPE_TAB *)ptr1)->modifier, ((CALL_TYPE_TAB *)ptr2)->modifier));
+}
+
+int cmpCountryCode(const void *ptr1, const void *ptr2)
+{
+    return (strcmp(((COUNTRY_CODE_TAB *)ptr1)->country_code, ((COUNTRY_CODE_TAB *)ptr2)->country_code));
+}
+
+int cmpPmnInfo(const void *ptr1, const void *ptr2)
+{
+    return (strcmp(((PMN_INFO_TAB *)ptr1)->pmn_code, ((PMN_INFO_TAB *)ptr2)->pmn_code));
+}
+
+int getOneTariff(int pmn_type, const char *pmn, ONETARIFF_TAB *one_out)
+{
+    int len = 0;
+    char _pmn[SIZE_PMN_CODE+1];
+
+    if ( *pmn == '\0' || one_out->charge_type == '\0' )
+        return FAILED;
+
+    len = strlen(pmn);
+    if ( pmn_type == E_MATCH ) {    // match exact pmn from database starting from max pmn size
+        while ( len > 3 ) {
+            memset(_pmn, 0x00, sizeof(_pmn));
+            strncpy(_pmn, pmn, len);
+
+            if ( _getOneTariffExact(pmn_type, _pmn, one_out) == SUCCESS ) {
+// printf("\not_tab: (%s) pmn(%s), ct(%s), cc(%s), id(%s), gm(%d), gr(%d)\n", _pmn, one_out->pmn, one_out->charge_type, one_out->country_code, one_out->idd_acc_code, one_out->gprs_min, one_out->gprs_round);
+// int i = 0;
+// for(i=0; i<NOF_ONE_TARIFF; i++) { printf("\t%02d\t'%010d'\n", i, one_out->tariff[i]); }
+// printf("\n");
+                return SUCCESS;
+            }
+            len--;
+        }
+        return FAILED;
+    }
+    else {
+        memset(_pmn, 0x00, sizeof(_pmn));
+        strncpy(_pmn, pmn, 3);
+        return _getOneTariffExact(pmn_type, _pmn, one_out);
+    }
+
+}
+
+int _getOneTariffExact(int pmn_type, const char *pmn, ONETARIFF_TAB *one_out)
+{
+    ONETARIFF_TAB *tmp = NULL;
+    ONETARIFF_TAB *tab;
+    ONETARIFF_TAB key;
+    int tab_size;
+
+    memset(&key, 0x00, sizeof(key));
+    strcpy(key.pmn, pmn);
+    strcpy(key.charge_type, one_out->charge_type);
+
+    if ( pmn_type == E_MATCH ) {
+        tab = gOneTar;
+        tab_size = gnOneTarRecCnt;
+    }
+    else if  ( pmn_type == E_AVG_PMN ) {
+        tab = gOneTarAvgPmn;
+        tab_size = gnOneTarAvgPmnRecCnt;
+    }
+    else {  // pmn_type == E_AVG_ALL
+        tab = gOneTarAvgAll;
+        strcpy(key.pmn, "");    // no pmn requires as it is averaged all value, one for postpaid and one for prepaid.
+        tab_size = gnOneTarAvgAllRecCnt;
+    }
+
+    tmp = (ONETARIFF_TAB *)bsearch(&key, tab, tab_size, sizeof(ONETARIFF_TAB), cmpOneTariff);
+
+    if ( tmp == (ONETARIFF_TAB *)NULL ) {
+        return FAILED;
+    }
+    else {
+        memcpy(one_out, tmp, sizeof(ONETARIFF_TAB));
+        return SUCCESS;
+    }
+
+}
+
+int getCallType(const char *evt_type_id, const char *sub_evt_type_id, const char *modifier, char *call_type, char *chrg_type, char *company_name)
+{
+    CALL_TYPE_TAB *tmp = NULL;
+    CALL_TYPE_TAB key;
+    memset(&key, 0x00, sizeof(key));
+
+    strcpy(key.evt_type_id, evt_type_id);
+    strcpy(key.sub_evt_type_id, sub_evt_type_id);
+    strToUpper(key.modifier, modifier);
+
+    tmp = (CALL_TYPE_TAB *)bsearch(&key, gCallType, gnCallTypeRecCnt, sizeof(CALL_TYPE_TAB), cmpCallType);
+
+    if ( tmp == (CALL_TYPE_TAB *)NULL ) {
+        return FAILED;
+    }
+    else {
+        strcpy(call_type, tmp->call_type);
+        strcpy(chrg_type, tmp->chrg_type);
+        strcpy(company_name, tmp->company_name);
+        return SUCCESS;
+    }
+}
+
+int isRiskBno(const char *bno, int *pat_id)
+{
+    int len = 0;
+    char _bno[SIZE_BNO+1];
+
+    if ( *bno == '\0' )
+        return FAILED;
+
+    len = strlen(bno);
+    while ( len > 5 ) {
+        memset(_bno, 0x00, sizeof(_bno));
+        strncpy(_bno, bno, len);
+
+        if ( _isRiskBnoExact(_bno, pat_id) == SUCCESS ) {
+            return SUCCESS;
+        }
+        len--;
+    }
+    return FAILED;
+}
+
+int _isRiskBnoExact(const char *bno, int *pat_id)
+{
+    RISK_BNO_TAB *tmp = NULL;
+    tmp = (RISK_BNO_TAB *)bsearch(bno, gRiskBno, gnRiskBnoRecCnt, sizeof(RISK_BNO_TAB), cmpRiskBno);
+
+    if ( tmp == (RISK_BNO_TAB *)NULL ) {
+        return FAILED;
+    }
+    else {
+        *pat_id = tmp->pat_id;
+        return SUCCESS;
+    }
+}
+
+int getMobileNo(const char *imsi, char *mobile, char *chrg_type, char *billsys)
+{
+    // 3 step query to get mobile number from imsi
+    // step 1. normal SIM
+    // step 2. multi SIM
+    // step 3. pre-paid
+    VARCHAR szSql[SIZE_BUFF];
+    char szMobileNo[SIZE_BNO];
+    char szChrgType[10];
+    char szTmpChrgType[10];
+    char szBillSys[5];
+    int  result = FAILED;
+
+    memset(szMobileNo, 0x00, sizeof(szMobileNo));
+    memset(szChrgType, 0x00, sizeof(szChrgType));
+    memset(szBillSys,  0x00, sizeof(szBillSys));
+    
+    // step 1. Normal SIM
+    sprintf((char*)szSql.arr, "SELECT A.MOBILE_NO, A.CHARGE_TYPE, " \
+                    "(SELECT C.BILLING_SYSTEM FROM SFF_ACCOUNT C WHERE C.ROW_ID = A.BILLING_ACCNT_ID) BILL_SYTEM " \
+                    "FROM  SFF_ASSET_INSTANCE A " \
+                    "WHERE IMSI = '%s' " \
+                    "AND   STATUS_CD <> 'DISCONNECT - CONVERTED' " \
+                    "AND   STATUS_CD <> 'DISCONNECT - PORTED' " \
+                    "AND   STATUS_CD <> 'TERMINATE' " \
+                    "AND   STATUS_CD <> 'INACTIVE' " \
+                    "AND   STATUS_CD <> 'DISCONNECT'", imsi);
+    szSql.len = strlen((char*)szSql.arr);
+writeLog(LOG_DB3, (char*)szSql.arr);
+
+    EXEC SQL AT SFF_DB PREPARE orcStmt1 FROM :szSql;
+    EXEC SQL AT SFF_DB DECLARE orcNormCrs CURSOR FOR orcStmt1;
+    EXEC SQL AT SFF_DB OPEN orcNormCrs;
+//printf("\n0 '%d' %s\n", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+    if ( sqlca.sqlcode == SUCCESS ) {
+        EXEC SQL AT SFF_DB FETCH orcNormCrs INTO :szMobileNo, :szChrgType, :szBillSys;
+        if ( sqlca.sqlcode == SUCCESS ) {
+writeLog(LOG_DB3, "found mobile %s for imsi %s at 2nd query", trimStr(szMobileNo), imsi);
+            result = SUCCESS;
+        }
+        else if ( sqlca.sqlcode == NOT_FOUND ) {
+            result = FAILED;
+        }
+        else {
+writeLog(LOG_DB2, "getMobileNo: Ora(%d) error on get mobile from imsi step 2 (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+            return FAILED;
+        }
+        EXEC SQL AT SFF_DB CLOSE orcNormCrs;
+
+    }
+
+    // step 2. Multi SIM
+    if ( result == FAILED ) {
+
+        sprintf((char*)szSql.arr, "SELECT S.MOBILE_NO, S.CHARGE_TYPE, " \
+                    "(SELECT  C.BILLING_SYSTEM FROM SFF_ACCOUNT C WHERE ROW_ID = S.BILLING_ACCNT_ID) BILL_SYTEM " \
+                    "FROM  SFFADM.SFF_ASSET_ATTRIBUTE T, SFFADM.SFF_ASSET_SERVICE_ITEM I, " \
+                    "SFFADM.SFF_ASSET_INSTANCE S, SFFADM.SFF_PRODUCT P " \
+                    "WHERE T.NAME  = 'IMSI' " \
+                    "AND   T.VALUE = '%s' " \
+                    "AND   T.ASSET_ITEM_ID = I.ROW_ID " \
+                    "AND   I.PRODUCT_ID = P.ROW_ID " \
+                    "AND   I.ASSET_INSTANCE_ID = S.ROW_ID ", imsi);
+        szSql.len = strlen((char*)szSql.arr);
+writeLog(LOG_DB3, (char*)szSql.arr);
+
+        EXEC SQL AT SFF_DB PREPARE orcStmt2 FROM :szSql;
+        EXEC SQL AT SFF_DB DECLARE orcMultiCrs CURSOR FOR orcStmt2;
+        EXEC SQL AT SFF_DB OPEN orcMultiCrs;
+
+        if ( sqlca.sqlcode == SUCCESS ) {
+            EXEC SQL AT SFF_DB FETCH orcMultiCrs INTO :szMobileNo, :szChrgType, :szBillSys;
+            if ( sqlca.sqlcode == SUCCESS ) {
+writeLog(LOG_DB3, "found mobile %s for imsi %s at 3rd query", trimStr(szMobileNo), imsi);
+                result = SUCCESS;
+            }
+            else if ( sqlca.sqlcode == NOT_FOUND ) {
+                result = FAILED;
+            }
+            else {
+writeLog(LOG_DB2, "getMobileNo: Ora(%d) error on get mobile from imsi step 3 (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+                return FAILED;
+            }
+            EXEC SQL AT SFF_DB CLOSE orcMultiCrs;
+        }
+    }
+    
+    // step 3. Pre-paid
+    if ( result == FAILED ) {
+
+        sprintf((char*)szSql.arr, "SELECT A.MOBILE_NO, 'PRE-PAID' CHARGE_TYPE, " \
+                    "(SELECT NVL(C.CHARGE_NODE, 'RTBS') FROM PP_MOBILE_NO_STOCK C WHERE C.MOBILE_NO = A.MOBILE_NO) BILL_SYSTEM " \
+                    "FROM  PP_MOBILE_ACCOUNT A, PP_SIM_STOCK B " \
+                    "WHERE A.SIM_SERIAL_NO = B.SIM_SERIAL_NO " \
+                    "AND   B.IMSI = '%s' " \
+                    "AND   A.ACCOUNT_STATUS = 'SA' " \
+                    "AND A.TYPE_OF_MOBILE_NO = 'PPS' ", imsi);
+        szSql.len = strlen((char*)szSql.arr);
+writeLog(LOG_DB3, (char*)szSql.arr);
+
+        EXEC SQL AT PPI_DB PREPARE orcStmt3 FROM :szSql;
+        EXEC SQL AT PPI_DB DECLARE orcPrepCrs CURSOR FOR orcStmt3;
+        EXEC SQL AT PPI_DB OPEN orcPrepCrs;
+
+        if ( sqlca.sqlcode == SUCCESS ) {
+            EXEC SQL AT PPI_DB FETCH orcPrepCrs INTO :szMobileNo, :szChrgType, :szBillSys;
+            if ( sqlca.sqlcode == SUCCESS ) {
+writeLog(LOG_DB3, "found mobile %s for imsi %s at 1st query", trimStr(szMobileNo), imsi);
+                result = SUCCESS;
+            }
+            else if ( sqlca.sqlcode == NOT_FOUND ) {
+                result = FAILED;
+            }
+            else {
+writeLog(LOG_DB2, "getMobileNo: Ora(%d) error on get mobile from imsi step 1 (%s)", sqlca.sqlcode, trimStr(sqlca.sqlerrm.sqlerrmc));
+                return FAILED;
+            }
+            EXEC SQL AT PPI_DB CLOSE orcPrepCrs;
+        }
+
+    }
+
+    memset(szTmpChrgType, 0x00, sizeof(szTmpChrgType));
+
+    //trimStr(szMobileNo);
+    trimStr(szChrgType);
+    trimStr(szBillSys);
+
+    strcpy(mobile, szMobileNo);
+    strToUpper(billsys, szBillSys);
+
+    strToUpper(szTmpChrgType, szChrgType);
+    if ( *szTmpChrgType != '1' && *szTmpChrgType != '0' ) {
+        if ( strstr(szTmpChrgType, "PRE") != NULL ) {
+            strcpy(chrg_type, PREPAID);
+        }
+        else {
+            strcpy(chrg_type, POSTPAID);
+        }
+    }
+
+    return result;
+
+}
+
+int getCountryCode(const char *bno, char *country_code)
+{
+    int len = 6;
+    char _bno[SIZE_BNO+1];
+
+    if ( *bno == '\0' )
+        return FAILED;
+
+    while ( len > 0 ) {
+        memset(_bno, 0x00, sizeof(_bno));
+        strncpy(_bno, bno, len);
+
+        if ( _getCountryCodeExact(_bno, country_code) == SUCCESS ) {
+            return SUCCESS;
+        }
+        len--;
+    }
+    return FAILED;
+}
+
+int _getCountryCodeExact(const char *bno, char *country_code)
+{
+    COUNTRY_CODE_TAB *tmp = NULL;
+    tmp = (COUNTRY_CODE_TAB *)bsearch(bno, gCountryCode, gnCountryCodeRecCnt, sizeof(COUNTRY_CODE_TAB), cmpCountryCode);
+
+    if ( tmp == (COUNTRY_CODE_TAB *)NULL ) {
+        return FAILED;
+    }
+    else {
+        strcpy(country_code, tmp->country_code);
+        return SUCCESS;
+    }
+}
+
+int getPmnInfo(const char *pmn_code, char *pmn_name, char *roam_country, char *roam_region)
+{
+
+    PMN_INFO_TAB *tmp = NULL;
+    tmp = (PMN_INFO_TAB *)bsearch(pmn_code, gPmnInfo, gnPmnInfoCnt, sizeof(PMN_INFO_TAB), cmpPmnInfo);
+
+    if ( tmp == (PMN_INFO_TAB *)NULL ) {
+        return FAILED;
+    }
+    else {
+        strcpy(pmn_name, tmp->pmn_name);
+        strcpy(roam_country, tmp->roam_country);
+        strcpy(roam_region, tmp->roam_region);
+        return SUCCESS;
+    }
+    
+}
