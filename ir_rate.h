@@ -18,6 +18,7 @@
 ///                                 Obsoletes backup feature, Add keep state, flushes logState and purge old data feature
 ///     1.1.1       26-Sep-2019     Minor Change (IDD Access Code can be a list)
 ///     1.1.2       21-Nov-2019     fix state file checking
+///     1.2.0       20-Jan-2020     Support IR SCP file format
 ///
 ///
 #ifndef __IR_RATE_H__

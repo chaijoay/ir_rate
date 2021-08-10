@@ -18,6 +18,7 @@
 ///                                 Obsoletes backup feature, Add keep state, flushes logState and purge old data feature
 ///     1.1.1       26-Sep-2019     Minor Change (IDD Access Code can be a list)
 ///     1.1.2       21-Nov-2019     fix state file checking
+///     1.2.0       20-Jan-2020     Support IR SCP file format
 ///
 ///
 #define _XOPEN_SOURCE           700         // Required under GLIBC for nftw()
@@ -174,7 +175,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
     logHeader();
-    
+
     char ir_file[SIZE_ITEM_L];  memset(ir_file, 0x00, sizeof(ir_file));
     char ir_type[10];           memset(ir_type, 0x00, sizeof(ir_type));
     long cont_pos = 0L;
@@ -186,7 +187,7 @@ int main(int argc, char *argv[])
     while ( TRUE ) {
 
         procLock(gszAppName, E_SET);
-        
+
         if ( isTerminated() == TRUE ) {
             break;
         }
@@ -248,7 +249,7 @@ int main(int argc, char *argv[])
                 }
 #endif
 
-                if ( cont_pos > 0 ) {   // continue from last time first 
+                if ( cont_pos > 0 ) {   // continue from last time first
                     writeLog(LOG_INF, "continue process %s from last time", ir_file);
                     procSynFiles(dirname(ir_file), basename(ir_file), ir_type, cont_pos);
                     cont_pos = 0;
@@ -258,12 +259,12 @@ int main(int argc, char *argv[])
                 nInpFileCntRnd = 0;
                 t_bat_start = time(NULL);
                 while ( fgets(snp_line, sizeof(snp_line), ifp) ) {
-                    
+
                     if ( isTerminated() == TRUE ) {
                         break;
                     }
 
-                    trimStr(snp_line);  // snap record format => <path>|<filename>
+                    trimStr((unsigned char*)snp_line);  // snap record format => <path>|<filename>
                     char sdir[SIZE_ITEM_M], sfname[SIZE_ITEM_M], irtype[10];
                     memset(sdir, 0x00, sizeof(sdir));
                     memset(sfname, 0x00, sizeof(sfname));
@@ -553,7 +554,7 @@ int chkSnapVsState(const char *snap)
     memset(tmp_stat, 0x00, sizeof(tmp_stat));
     memset(tmp_snap, 0x00, sizeof(tmp_snap));
     memset(cmd, 0x00, sizeof(cmd));
-    
+
     sprintf(tmp_stat, "%s/tmp_%s_XXXXXX", gszIniParCommon[E_TMP_DIR], gszAppName);
     sprintf(tmp_snap, "%s/osnap_%s_XXXXXX", gszIniParCommon[E_TMP_DIR], gszAppName);
     mkstemp(tmp_stat);
@@ -590,7 +591,7 @@ writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
     sprintf(cmd, "rm -f %s %s.tmp", tmp_stat, tmp_stat);
 writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
     system(cmd);
-    
+
     sprintf(cmd, "mv %s %s", tmp_snap, snap);
 writeLog(LOG_DB3, "chkSnapVsState cmd '%s'", cmd);
     system(cmd);
@@ -659,9 +660,9 @@ void clearOldState()
                     char old_state[SIZE_ITEM_L];
                     memset(old_state, 0x00, sizeof(old_state));
                     sprintf(old_state, "%s/%s", gszIniParCommon[E_STATE_DIR], p_dirent->d_name);
-                    
+
                     purgeOldData(old_state);
-                    
+
                     sprintf(tmp, "rm -f %s 2>/dev/null", old_state);
                     writeLog(LOG_INF, "remove state file: %s", p_dirent->d_name);
                     system(tmp);
@@ -676,17 +677,17 @@ void purgeOldData(const char *old_state)
 {
     FILE *ofp = NULL;
     char line[SIZE_ITEM_L], sdir[SIZE_ITEM_L], sfname[SIZE_ITEM_L], cmd[SIZE_ITEM_L];
-    
+
     if ( (ofp = fopen(old_state, "r")) != NULL ) {
         memset(line, 0x00, sizeof(line));
         while ( fgets(line, sizeof(line),ofp) ) {
             memset(sdir,   0x00, sizeof(sdir));
             memset(sfname, 0x00, sizeof(sfname));
             memset(cmd,    0x00, sizeof(cmd));
-            
+
             getTokenItem(line, 1, '|', sdir);
             getTokenItem(line, 2, '|', sfname);
-            
+
             sprintf(cmd, "rm -f %s/%s", sdir, sfname);
             writeLog(LOG_DB3, "\told file %s/%s purged", sdir, sfname);
             system(cmd);
@@ -732,12 +733,12 @@ int readConfig(int argc, char *argv[])
             return FAILED;
         }
     }
-    
+
     if ( strlen(tmp) > 1 || *tmp - '0' < 0 || *tmp - '0' > 9 ) {
         printUsage();
         return FAILED;
     }
-    
+
     gnPrcId = atoi(tmp);
     sprintf(gszAppName, "%s_%d", _APP_NAME_, gnPrcId);
     if ( gszIniFile[0] == '\0' ) {
@@ -970,7 +971,7 @@ void procSynFiles(const char *dir, const char *fname, const char *ir_type, long 
     memset(full_ir_name, 0x00, sizeof(full_ir_name));
     memset(read_rec, 0x00, sizeof(read_rec));
     memset(ofile_dtm, 0x00, sizeof(ofile_dtm));
-    
+
     ( ++gnFileSeq > 999 ? gnFileSeq = 0 : gnFileSeq );
     sprintf(ofile_dtm, "%s_%03d_%d", getSysDTM(DTM_DATE_TIME), gnFileSeq, gnPrcId);
 
@@ -990,9 +991,9 @@ void procSynFiles(const char *dir, const char *fname, const char *ir_type, long 
 
             memset(pbuf_rec, 0x00, sizeof(pbuf_rec));
             memset(&gIrCommon, 0x00, sizeof(gIrCommon));
-            trimStr(read_rec);
+            trimStr((unsigned char*)read_rec);
             memset(read_rec_ori, 0x00, sizeof(read_rec_ori));
-            
+
             // safe original read record for later use, since getTokenAll modifies input string.
             strcpy(read_rec_ori, read_rec);
             line_cnt++;
@@ -1010,10 +1011,10 @@ void procSynFiles(const char *dir, const char *fname, const char *ir_type, long 
                 imsi_field = E_NRT_IMSI;
             }
             else if ( strcmp(ir_type, gszIniParInput[E_SCP_FPREF]) == 0 ) {
-                ir_num_field = 800;  /* NOF_SCP_FLD; */
+                ir_num_field = NOF_SCP_FLD;     /* NOF_SCP_FLD; */
                 cSep = '|';
                 verifyField = verifyInpFieldScp;
-                imsi_field = 1;
+                imsi_field = EA_CLLG_PARTY_IMSI;
             }
             else {
                 ir_num_field = NOF_RTB_FLD;
@@ -1032,9 +1033,15 @@ void procSynFiles(const char *dir, const char *fname, const char *ir_type, long 
                 }
                 continue;
             }
-            
+
 // check if the ending number of imsi is to be handled by this process or not
-            idx = strlen(pbuf_rec[imsi_field])-1;
+            idx = strlen(pbuf_rec[imsi_field]);
+            if ( strcmp(ir_type, gszIniParInput[E_SCP_FPREF]) == 0 && idx == 0 ) {
+                imsi_field = EA_CLLD_PARTY_IMSI;
+                idx = strlen(pbuf_rec[imsi_field]);
+            }
+            //idx = strlen(pbuf_rec[imsi_field])-1;
+            idx--;
             mod_id = pbuf_rec[imsi_field][idx] - '0';
 
             if ( gnPrcId != mod_id ) {
@@ -1073,12 +1080,12 @@ writeLog(LOG_DB3, "skip unhandled imsi '%s'", pbuf_rec[imsi_field]);
             else {
                 cnt_skip++;
             }
-            
+
             if ( (cntr_wrt % 2000) == 0 && cntr_wrt > 0 ) {
                 writeLog(LOG_INF, "%10d records have been processed", cntr_wrt);
                 checkPoint(&ifp_ir, full_ir_name, (char*)ir_type, gszIniParCommon[E_TMP_DIR], gszAppName, E_SET);
             }
-            
+
             if ( isTerminated() == TRUE ) {
                 checkPoint(&ifp_ir, full_ir_name, (char*)ir_type, gszIniParCommon[E_TMP_DIR], gszAppName, E_SET);
                 break;
@@ -1090,7 +1097,7 @@ writeLog(LOG_DB3, "skip unhandled imsi '%s'", pbuf_rec[imsi_field]);
             checkPoint(NULL, "", "", gszIniParCommon[E_TMP_DIR], gszAppName, E_CLR);
         }
         t_stop = time(NULL);
-        
+
         if ( ifp_ir   != NULL ) fclose(ifp_ir);
         if ( ofp_rej  != NULL ) fclose(ofp_rej);
         if ( ofp_imsi != NULL ) fclose(ofp_imsi);
@@ -1103,7 +1110,7 @@ writeLog(LOG_DB3, "skip unhandled imsi '%s'", pbuf_rec[imsi_field]);
             system(cmd);
             chmod(gszOutFname, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
         }
-        
+
         logState(dir, fname, ir_type);
         writeLog(LOG_INF, "%s done, process(id%d) common=%d skip=%d not_found(imsi=%d, pmn=%d) reject=%d total=%d file_time_used=%d sec", fname, gnPrcId, cntr_wrt, cnt_skip, cntr_imsi, cntr_pmn, cntr_rej, line_cnt, (t_stop - t_start));
 #if 0
@@ -1127,9 +1134,9 @@ int olderThan(int day, const char *sdir, const char *fname)
     char   full_name[SIZE_ITEM_L];
     long   file_age = 0;
     long   bound = (long)(day * SEC_IN_DAY);
-    
+
     memset(full_name, 0x00, sizeof(full_name));
-    
+
     memset(&stat_buf, 0x00, sizeof(stat_buf));
     if ( !lstat(full_name, &stat_buf) ) {
         systime = time(NULL);
@@ -1152,12 +1159,12 @@ int verifyInpFieldTap(char *pbuf[], int bsize, const char *fname, char *err_msg)
     if ( *pbuf[E_EVT_TYPE_ID] != '2' ) {    // reject head/trailer record, data record always be 2xx
         return FALSE;
     }
-    
+
     // set default
     strcpy(gIrCommon.volume, "0");
     strcpy(gIrCommon.duration,  "0");
     strcpy(gIrCommon.total_call_evt_dur, "0");
-    
+
     if ( atoi(gszIniParCommon[E_LOG_LEVEL]) >= LOG_DB3 ) {
         int i; char _rec[SIZE_BUFF_2X]; memset(_rec, 0x00, sizeof(_rec));
         for ( i=0; i<bsize; i++ ) {
@@ -1238,12 +1245,12 @@ int verifyInpFieldNrt(char *pbuf[], int bsize, const char *fname, char *err_msg)
 {
     char hh[3], mm[3], ss[3], start_dtm[SIZE_DATE_TIME+1];
     time_t t_dtm;
-    
+
     // set default
     strcpy(gIrCommon.volume, "0");
     strcpy(gIrCommon.duration,  "0");
     strcpy(gIrCommon.total_call_evt_dur, "0");
-    
+
     if ( atoi(gszIniParCommon[E_LOG_LEVEL]) >= LOG_DB3 ) {
         int i; char _rec[SIZE_BUFF_2X]; memset(_rec, 0x00, sizeof(_rec));
         for ( i=0; i<bsize; i++ ) {
@@ -1268,7 +1275,13 @@ int verifyInpFieldNrt(char *pbuf[], int bsize, const char *fname, char *err_msg)
             strcpy(gIrCommon.duration,  pbuf[E_DURATION]);
             strcpy(gIrCommon.total_call_evt_dur, pbuf[E_DURATION]);
         }
-        strcpy(gIrCommon.called_no, pbuf[E_DIALLED_DIGITS]);
+
+        if ( strlen(pbuf[E_DIALLED_DIGITS]) > 0 ) {
+            strcpy(gIrCommon.called_no, pbuf[E_DIALLED_DIGITS]);
+        }
+        else {
+            strcpy(gIrCommon.called_no, pbuf[E_CONN_NO]);
+        }
     }
     else {  // MTC
         if ( *pbuf[E_TELE_SRV_CODE] == '2' ) {      // SMS
@@ -1340,9 +1353,10 @@ int verifyInpFieldNrt(char *pbuf[], int bsize, const char *fname, char *err_msg)
 
 int verifyInpFieldScp(char *pbuf[], int bsize, const char *fname, char *err_msg)
 {
-    char hh[3], mm[3], ss[3], start_dtm[SIZE_DATE_TIME+1];
-    time_t t_dtm;
-    
+    char hh[3], mm[3], ss[3], datetime[SIZE_DATE_TIME+1];
+    float utc_time;
+    //time_t t_dtm;
+
     if ( atoi(gszIniParCommon[E_LOG_LEVEL]) >= LOG_DB3 ) {
         int i; char _rec[SIZE_BUFF_2X]; memset(_rec, 0x00, sizeof(_rec));
         for ( i=0; i<bsize; i++ ) {
@@ -1353,7 +1367,8 @@ int verifyInpFieldScp(char *pbuf[], int bsize, const char *fname, char *err_msg)
         }
         writeLog(LOG_DB3, "%s", _rec);
     }
-    
+
+    strcpy(gIrCommon.volume, "0");
     if ( *pbuf[EA_SVC_CAT] == '5' ) {   // GPRS
         strcpy(gIrCommon.call_type, TYPE_GPRS);
     }
@@ -1365,6 +1380,7 @@ int verifyInpFieldScp(char *pbuf[], int bsize, const char *fname, char *err_msg)
         else {  // MOC: EA_SVC_FLOW == 1 or 3
             strcpy(gIrCommon.call_type, TYPE_VOICE_MO);
             strcpy(gIrCommon.called_no, pbuf[EA_CLLD_PARTY_NUM]);   //  B_No
+            strcpy(gIrCommon.country_code, pbuf[EA_CLLG_RM_CNTRY_CODE]);
         }
         if ( strcmp(pbuf[EA_USG_MEAS_ID], "1004") == 0 ) {    // Usage_Measure_id = 1004 => Actual_usage * 60
             sprintf(gIrCommon.duration, "%d", (atoi(pbuf[EA_ACT_USG]) * 60));
@@ -1379,6 +1395,7 @@ int verifyInpFieldScp(char *pbuf[], int bsize, const char *fname, char *err_msg)
         }
         else {  // MOC
             strcpy(gIrCommon.call_type, TYPE_SMS_MO);
+            strcpy(gIrCommon.country_code, pbuf[EA_CLLG_RM_CNTRY_CODE]);
         }
     }
     else {
@@ -1390,51 +1407,76 @@ int verifyInpFieldScp(char *pbuf[], int bsize, const char *fname, char *err_msg)
     strncpy(gIrCommon.st_call_date, pbuf[EA_START_DATE], SIZE_DATE_ONLY);
     strncpy(gIrCommon.st_call_time, pbuf[EA_START_DATE]+SIZE_DATE_ONLY, SIZE_TIME_ONLY);
     strcpy(gIrCommon.pmn,           pbuf[EA_RM_PLMN_CODE_IR]);
-    strcpy(gIrCommon.proc_dtm,      getSysDTM(DTM_DATE_TIME));
+    //strcpy(gIrCommon.proc_dtm,      getSysDTM(DTM_DATE_TIME));
+    strcpy(gIrCommon.proc_dtm,      pbuf[EA_CREATE_DATE]);
     strcpy(gIrCommon.company_name,  "AWN");
 
-    // start date time
-    memset(hh, 0x00, sizeof(hh)); memset(mm, 0x00, sizeof(mm)); memset(ss, 0x00, sizeof(ss));
-    strncpy(hh, gIrCommon.st_call_time, 2);
-    strncpy(mm, gIrCommon.st_call_time+2, 2);
-    strncpy(ss, gIrCommon.st_call_time+4, 2);
-    sprintf(gIrCommon.start_dtm, "%s %s:%s:%s", gIrCommon.st_call_date, hh, mm, ss);
-
-    // stop date time
-    memset(start_dtm, 0x00, sizeof(start_dtm));
-    strcpy(start_dtm, pbuf[E_CALL_ST_TIME]);
-    t_dtm = dateStr2TimeT(start_dtm) + atoi(pbuf[E_DURATION]);
-    strcpy(gIrCommon.stop_dtm, getDateTimeT(&t_dtm, DTM_DATE_TIMEF));
-
     // thailand date time (home datetime)
-    //strcpy(gIrCommon.th_st_call_dtm, getThDTM(start_dtm, atof(pbuf[E_ROAM_UTC]), DTM_DATE_TIMEF));
-    
-    sprintf(gIrCommon.chrg_one_tariff, "%.3f", (float)(atoi(pbuf[EA_DEDUCT_CHG_AMT_01])/1000));
-    
+    //strcpy(gIrCommon.th_st_call_dtm, getThDTM(datetime, 0.0, DTM_DATE_TIMEF));
+    //strcpy(gIrCommon.th_st_call_dtm, getThDTM(pbuf[EA_CUST_LOC_START_DATE], (float)0, DTM_DATE_TIMEF));
+    // --- No Datetime conversion for home datetime ---
+    memset(datetime, 0x00, sizeof(datetime));
+    memset(hh, 0x00, sizeof(hh)); memset(mm, 0x00, sizeof(mm)); memset(ss, 0x00, sizeof(ss));
+    strcpy(datetime, pbuf[EA_CUST_LOC_START_DATE]);
+    strncpy(hh, datetime+8,  2); // YYYYMMDDHHmmSS
+    strncpy(mm, datetime+10, 2);
+    strncpy(ss, datetime+12, 2);
+    sprintf(gIrCommon.th_st_call_dtm, "%.*s %s:%s:%s", 8, datetime, hh, mm, ss);
+
+    strcpy(gIrCommon.chrg_type, pbuf[EA_PAY_TYPE]);
+    if ( strcmp(gIrCommon.chrg_type, PREPAID) == 0 ) {
+        sprintf(gIrCommon.chrg_one_tariff, "%.3f", (float)(atoi(pbuf[EA_DEBIT_AMT])/1000000));  // divided by 1 Million
+    }
+    else {
+        //sprintf(gIrCommon.chrg_one_tariff, "%.3f", (float)(atoi(pbuf[EA_DEDUCT_CHG_AMT_01])/1000));
+    }
+
     if ( strcmp(pbuf[EA_USG_MEAS_ID], "1004") == 0 ) {    // Usage_Measure_id = 1004 => Actual_usage * 60
         sprintf(gIrCommon.total_call_evt_dur, "%d", (atoi(pbuf[EA_RATE_USG]) * 60));
     }
     else {  // Usage_Measure_id = 1003 => did not convert
         strcpy(gIrCommon.total_call_evt_dur, pbuf[EA_RATE_USG]);
     }
-    
-    strcpy(gIrCommon.ori_rec_type, pbuf[EA_CDR_TYPE]);
+
+    strcpy(gIrCommon.ori_rec_type, pbuf[EA_CHG_CODE_01]);
     strcpy(gIrCommon.mobile_no, pbuf[EA_PRI_IDENT]);
     strcpy(gIrCommon.imei, pbuf[EA_IMEI]);
-    
+
     strcpy(gIrCommon.ori_source, TYPE_SCP);
     strcpy(gIrCommon.ori_filename, fname);
 
-    // strcpy(gIrCommon.chrg_type,          pbuf[]);
+
     // strcpy(gIrCommon.called_no_type,     pbuf[]);
     // strcpy(gIrCommon.risk_no_flg,        pbuf[]);
     // strcpy(gIrCommon.risk_no_id,         pbuf[]);
     // strcpy(gIrCommon.billing_sys,        pbuf[]);
-    // strcpy(gIrCommon.start_dtm,          pbuf[]);
-    // strcpy(gIrCommon.stop_dtm,           pbuf[]);
-    // strcpy(gIrCommon.chrg_id,            pbuf[]);
+    // strcpy(gIrCommon.chrg_id,            pbuf[]);    -> Null
     // strcpy(gIrCommon.utc_time,           pbuf[]);
-    // strcpy(gIrCommon.country_code,       pbuf[]);
+    if ( getGmtOffset(gIrCommon.pmn, &utc_time) ) {
+        sprintf(err_msg, "unable to utc_time of pmn(%s)", gIrCommon.pmn);
+        return FALSE;
+    }
+
+    sprintf(gIrCommon.utc_time, "%04d", (int)(utc_time * 100));
+
+    float utc_ref = 0.0f;   // EA_START_DATE and EA_END_DATE is a time at GMT 0
+    // start date time
+    // memset(hh, 0x00, sizeof(hh)); memset(mm, 0x00, sizeof(mm)); memset(ss, 0x00, sizeof(ss));
+    // strncpy(hh, gIrCommon.st_call_time, 2);
+    // strncpy(mm, gIrCommon.st_call_time+2, 2);
+    // strncpy(ss, gIrCommon.st_call_time+4, 2);
+    // sprintf(gIrCommon.start_dtm, "%s %s:%s:%s", gIrCommon.st_call_date, hh, mm, ss);
+    strcpy(gIrCommon.start_dtm, getWorldDTM(pbuf[EA_START_DATE], utc_time, utc_ref, DTM_DATE_TIMEF));
+
+    // stop date time
+    // memset(datetime, 0x00, sizeof(datetime));
+    // memset(hh, 0x00, sizeof(hh)); memset(mm, 0x00, sizeof(mm)); memset(ss, 0x00, sizeof(ss));
+    // strcpy(datetime, pbuf[EA_END_DATE]);
+    // strncpy(hh, datetime+9,  2); // YYYYMMDDHHmmSS
+    // strncpy(mm, datetime+11, 2);
+    // strncpy(ss, datetime+13, 2);
+    // sprintf(gIrCommon.stop_dtm, "%.*s %s:%s:%s", 8, datetime, hh, mm, ss);
+    strcpy(gIrCommon.stop_dtm, getWorldDTM(pbuf[EA_END_DATE], utc_time, utc_ref, DTM_DATE_TIMEF));
 
     return TRUE;
 
@@ -1442,9 +1484,9 @@ int verifyInpFieldScp(char *pbuf[], int bsize, const char *fname, char *err_msg)
 
 int verifyInpFieldRtb(char *pbuf[], int bsize, const char *fname, char *err_msg)
 {
-    char hh[3], mm[3], ss[3], start_dtm[SIZE_DATE_TIME+1];
-    time_t t_dtm;
-    
+    //char hh[3], mm[3], ss[3], start_dtm[SIZE_DATE_TIME+1];
+    //time_t t_dtm;
+
     if ( atoi(gszIniParCommon[E_LOG_LEVEL]) >= LOG_DB3 ) {
         int i; char _rec[SIZE_BUFF_2X]; memset(_rec, 0x00, sizeof(_rec));
         for ( i=0; i<bsize; i++ ) {
@@ -1490,7 +1532,7 @@ int verifyInpFieldRtb(char *pbuf[], int bsize, const char *fname, char *err_msg)
 
 }
 
-int calcOneTariff()  // need to fixed
+int calcOneTariff()
 {
     int result = SUCCESS;
     int one_charge = 0, tmp_one_tariff = 0;
@@ -1564,7 +1606,7 @@ int calcOneTariff()  // need to fixed
     }
     else if ( strcmp(gIrCommon.call_type, TYPE_SMS_MO) == 0 ) {     // E_SMSO_CHR (21)
         //one_charge = onetariff.tariff[E_SMSO_CHR];
-        //sprintf(gIrCommon.chrg_one_tariff, "%.3f", (float)(one_charge/10));    // make it satang by divide by ten
+        //sprintf(gIrCommon.chrg_one_tariff, "%.3f", (float)(one_charge/10));
         tmp_one_tariff = onetariff.tariff[E_SMSO_CHR];
     }
     else if ( strcmp(gIrCommon.call_type, TYPE_VOICE_MT) == 0 ) {   // E_MTC_CHR (30)
@@ -1574,7 +1616,7 @@ int calcOneTariff()  // need to fixed
     }
     else if ( strcmp(gIrCommon.call_type, TYPE_SMS_MT) == 0 ) {     // E_SMST_CHR (31)
         //one_charge = onetariff.tariff[E_SMST_CHR];
-        //sprintf(gIrCommon.chrg_one_tariff, "%.3f", (float)(one_charge/10));  // make it satang by divide by ten
+        //sprintf(gIrCommon.chrg_one_tariff, "%.3f", (float)(one_charge/10));
         tmp_one_tariff = onetariff.tariff[E_SMST_CHR];
     }
     else {
@@ -1585,6 +1627,7 @@ int calcOneTariff()  // need to fixed
         int i = 0;
         memset(call_num, 0x00, sizeof(call_num));
 
+        // find idd_acc_code from ini
         for ( i = 0; i < gnIddCnt; i++ ) {
             acc_len = strlen(pbuf_idd[i]);
             if ( strncmp(gIrCommon.called_no, pbuf_idd[i], acc_len) == 0 ) {
@@ -1592,12 +1635,23 @@ int calcOneTariff()  // need to fixed
                 break;
             }
         }
+        // if the idd_acc_code from ini is not match cdr, use idd_acc_code from db
         if ( call_num[0] == '\0' ) {
             if ( strncmp(gIrCommon.called_no, onetariff.idd_acc_code, idd_len) == 0 ) {
                 strcpy(call_num, gIrCommon.called_no+idd_len);
             }
             else {
-                strcpy(call_num, gIrCommon.called_no);
+                int pos = 0;
+                if ( strncmp(gIrCommon.called_no, "+00", 3) == 0 ) {
+                    pos = 3;
+                }
+                else if ( strncmp(gIrCommon.called_no, "00", 2) == 0 ) {
+                    pos = 2;
+                }
+                else if ( strncmp(gIrCommon.called_no, "+", 1) == 0 ) {
+                    pos = 1;
+                }
+                strcpy(call_num, gIrCommon.called_no+pos);
             }
         }
 
@@ -1617,9 +1671,16 @@ int calcOneTariff()  // need to fixed
             strcpy(gIrCommon.called_no_type, "Local");
         }
         else {
-            one_charge = onetariff.tariff[E_MOC_CHR_INTER];
-            strcpy(gIrCommon.called_no_type, "IDD");
-            getCountryCode(call_num, gIrCommon.country_code);
+            if ( call_num[0] == '0' && call_num[1]-'0' > 0 ) {  // Finally, if dialed digit is started with single zero, assume it's a local call.
+                one_charge = onetariff.tariff[E_MOC_CHR_LOCAL];
+                strcpy(gIrCommon.country_code, onetariff.country_code);
+                strcpy(gIrCommon.called_no_type, "Local");
+            }
+            else {  // Otherwise, assume it's a IDD call.
+                one_charge = onetariff.tariff[E_MOC_CHR_INTER];
+                strcpy(gIrCommon.called_no_type, "IDD");
+                getCountryCode(call_num, gIrCommon.country_code);
+            }
         }
 
         strcpy(gIrCommon.risk_no_flg, "N");
@@ -1632,7 +1693,7 @@ int calcOneTariff()  // need to fixed
         //sprintf(gIrCommon.chrg_one_tariff, "%.3f", (ceil(atoi(gIrCommon.duration)/60) * one_charge));
         tmp_one_tariff = calcDurCharge(atoi(gIrCommon.duration), one_charge);
     }
-    sprintf(gIrCommon.chrg_one_tariff, "%.0f", (float)(tmp_one_tariff/10));    // make it satang by divide by ten
+    sprintf(gIrCommon.chrg_one_tariff, "%.0f", (float)tmp_one_tariff);
 
     return result;
 
@@ -1644,7 +1705,7 @@ int calcDurCharge(int duration, int one_tariff)
 
     if ( !duration || !one_tariff )
         return 0;
-    
+
     if ( duration <= 60 ) {
         return one_tariff;
     }
@@ -1681,6 +1742,10 @@ int wrtOutIrCommon(const char *odir, const char *ir_type, const char *file_dtm, 
                 gIrCommon.total_call_evt_dur, gIrCommon.ori_rec_type, gIrCommon.mobile_no, gIrCommon.imei,
                 gIrCommon.ori_source, gIrCommon.ori_filename, gIrCommon.country_code,
                 gIrCommon.pmn_name, gIrCommon.roam_country, gIrCommon.roam_region);
+writeLog(LOG_DB3, "final rtd rec> stime(%s) calltype(%s) mobno(%s) imsi(%s) dur(%s) chg(%s[satang]) src(%s)"
+        , gIrCommon.st_call_time, gIrCommon.call_type, gIrCommon.mobile_no, gIrCommon.imsi
+        , gIrCommon.duration, gIrCommon.chrg_one_tariff, gIrCommon.ori_source);
+
     return SUCCESS;
 
 }
@@ -1751,7 +1816,7 @@ int wrtAlrtDbConnFail(const char *odir, const char *fname, const char *dbsvr)
     writeLog(LOG_INF, "db connection alert file is created: %s", fname);
 
     return SUCCESS;
-    
+
 }
 
 int manageMapTab()
@@ -1822,7 +1887,7 @@ int chkStateAndConcat(const char *oFileName)
     char cmd[SIZE_BUFF];
     memset(cmd, 0x00, sizeof(cmd));
     unlink(oFileName);
-    
+
     if ( (p_dir = opendir(gszIniParCommon[E_STATE_DIR])) != NULL ) {
         while ( (p_dirent = readdir(p_dir)) != NULL ) {
             // state file name: <APP_NAME>_<PROC_TYPE>_YYYYMMDD.proclist

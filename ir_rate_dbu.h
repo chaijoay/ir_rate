@@ -18,6 +18,7 @@
 ///                                 Obsoletes backup feature, Add keep state, flushes logState and purge old data feature
 ///     1.1.1       26-Sep-2019     Minor Change (IDD Access Code can be a list)
 ///     1.1.2       21-Nov-2019     fix state file checking
+///     1.2.0       20-Jan-2020     Support IR SCP file format
 ///
 ///
 #ifndef __IR_RATE_DBU_H__
@@ -62,6 +63,7 @@
 
 #define     PREPAID             "0"
 #define     POSTPAID            "1"
+#define     HYBRID              "2"
 
 #define     BIT_MIS_IMSI        0x001
 #define     BIT_MIS_PMN         0x002
@@ -91,13 +93,14 @@ typedef enum {
 // one_tariff_avg_pmn
 // one_tariff_avg_all
 typedef struct onetariff_tab {
-    char pmn[SIZE_PMN_CODE];           // key1
-    char charge_type[SIZE_CHRG_TYPE];  // key2
-    char country_code[SIZE_COUNTRY_CODE];
-    char idd_acc_code[SIZE_IDD_ACC_CODE];
-    int  tariff[NOF_ONE_TARIFF];
-    int  gprs_min;
-    int  gprs_round;
+    char  pmn[SIZE_PMN_CODE];           // key1
+    char  charge_type[SIZE_CHRG_TYPE];  // key2
+    char  country_code[SIZE_COUNTRY_CODE];
+    char  idd_acc_code[SIZE_IDD_ACC_CODE];
+    int   tariff[NOF_ONE_TARIFF];
+    int   gprs_min;
+    int   gprs_round;
+    float gmt_offset;
 } ONETARIFF_TAB;
 
 // risk_bno
@@ -154,6 +157,7 @@ int   cmpPmnInfo(const void *ptr1, const void *ptr2);
 
 int   getOneTariff(int pmn_type, const char *pmn, ONETARIFF_TAB *one_out);
 int   _getOneTariffExact(int pmn_type, const char *pmn, ONETARIFF_TAB *one_out);
+int   getGmtOffset(const char *pmn, float *gmt_offset);
 int   getCallType(const char *evt_type_id, const char *sub_evt_type_id, const char *modifier, char *call_type, char *chrg_type, char *company_name);
 int   isRiskBno(const char *bno, int *pat_id);
 int   _isRiskBnoExact(const char *bno, int *pat_id);
