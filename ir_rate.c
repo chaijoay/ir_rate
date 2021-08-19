@@ -20,6 +20,7 @@
 ///     1.1.2       21-Nov-2019     fix state file checking
 ///     1.2.0       20-Jan-2020     Support IR SCP file format
 ///     1.2.1       31-Jul-2020     check utc_time format must be in form of (+/-)hhmm
+///     1.2.2       18-Aug-2020     Fixed wrong Idd Access Code checking (array out of index)
 ///
 ///
 #define _XOPEN_SOURCE           700         // Required under GLIBC for nftw()
@@ -1631,7 +1632,7 @@ int calcOneTariff()
         // find idd_acc_code from ini
         for ( i = 0; i < gnIddCnt; i++ ) {
             acc_len = strlen(pbuf_idd[i]);
-            if ( strncmp(gIrCommon.called_no, pbuf_idd[i], acc_len) == 0 ) {
+            if ( *pbuf_idd[i] != '\0' && strncmp(gIrCommon.called_no, pbuf_idd[i], acc_len) == 0 ) {
                 strcpy(call_num, gIrCommon.called_no+acc_len);
                 break;
             }

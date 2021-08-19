@@ -20,6 +20,7 @@
 ///     1.1.2       21-Nov-2019     fix state file checking
 ///     1.2.0       20-Jan-2020     Support IR SCP file format
 ///     1.2.1       31-Jul-2020     check utc_time format must be in form of (+/-)hhmm
+///     1.2.2       18-Aug-2020     Fixed wrong Idd Access Code checking (array out of index)
 ///
 ///
 #ifndef __IR_RATE_H__
@@ -31,7 +32,7 @@
 #include <ftw.h>
 
 #define _APP_NAME_              "ir_rate"
-#define _APP_VERS_              "1.2.1"
+#define _APP_VERS_              "1.2.2"
 
 #define     TYPE_TAP            "TAP"
 #define     TYPE_NRT            "NRT"
